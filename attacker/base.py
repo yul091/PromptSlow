@@ -198,7 +198,7 @@ class SlowAttacker(BaseAttacker):
         super(SlowAttacker, self).__init__(
             device, tokenizer, model, max_len, max_per, task,
         )
-        self.sp_token = '<separate>'
+        self.sp_token = ' <separate> '
         self.select_beam = select_beams
         self.fitness = fitness
         self.eos_weight = eos_weight
@@ -372,7 +372,9 @@ class SlowAttacker(BaseAttacker):
         """
         torch.autograd.set_detect_anomaly(True)
         ori_len, (best_adv_text, best_len), (cur_adv_text, cur_len) = self.prepare_attack(text)
+        # print("Original sent: ", cur_adv_text)
         ori_context = cur_adv_text.split(self.sp_token)[0].strip()
+        # print("Original context: ", ori_context)
         adv_his = []
         modify_pos = [] # record already modified positions (avoid repeated perturbation)
         t1 = time.time()
@@ -426,6 +428,7 @@ class SlowAttacker(BaseAttacker):
             
             # Only mutate the part after special token
             cur_free_text = cur_text.split(self.sp_token)[1].strip()
+            # print("current free msg: ", cur_free_text)
             new_strings = self.mutation(ori_context, cur_free_text, grad, label, modify_pos)
             # Pad the original context
             new_strings = [

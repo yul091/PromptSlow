@@ -60,7 +60,7 @@ class PromptAttacker(SlowAttacker):
         modified_pos = set(modify_pos)
         orig_sent = self.default_tokenizer.tokenize(sentence, pos_tagging=False)
         if modify_pos:
-            orig_sent = orig_sent[trigger_len:]
+            orig_sent = orig_sent[:-trigger_len]
         
         def removeBPE(word: str):
             if word.startswith('▁'):
@@ -78,7 +78,7 @@ class PromptAttacker(SlowAttacker):
             for cw in important_tokens:
                 cw = removeBPE(cw)
                 tt = self.triggers[:i] + [cw] + self.triggers[i + 1:]
-                xt = self.default_tokenizer.detokenize(tt + orig_sent)
+                xt = self.default_tokenizer.detokenize(orig_sent + tt)
                 new_strings.append((i, xt))
         
         return new_strings

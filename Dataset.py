@@ -133,7 +133,7 @@ class DGDataset:
         if not prev_utt_pc:
             original_context = context
         else:
-            sp_token = '<separate>'
+            sp_token = ' '
             original_context = context + sp_token + sp_token.join(prev_utt_pc)
         
         references.append(guided_message)
