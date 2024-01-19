@@ -1,444 +1,650 @@
-import abc
-import torch
-import stanza
-import pandas as pd
-import language_tool_python
-from supar import Parser
-from nltk.tree import Tree
-from nltk.corpus import wordnet as wn
-import tensorflow as tf
-import tensorflow_hub as hub
-from sentence_transformers import SentenceTransformer, util
-from transformers import (
-    AutoTokenizer, 
-    AutoModelForMaskedLM,
-    PegasusForConditionalGeneration,
-    PegasusTokenizer
-)
+from typing import List, Dict, Tuple, Union
+from dataclasses import dataclass, asdict
+from glob import glob
+from nltk.tokenize import sent_tokenize, word_tokenize
+import sys
+import json
+import re
+import random
+import os
+import logging
+import openai
+import numpy as np
+import pickle
+from bs4 import BeautifulSoup
+from tqdm import tqdm
+from transformers import GPT2Tokenizer
+import time
+import spacy
+from datasets import load_dataset
+from filelock import FileLock
+import traceback
 
 
-ENGLISH_FILTER_WORDS = [
-    'a', 'about', 'above', 'across', 'after', 'afterwards', 'again', 'against', 'ain', 'all', 'almost',
-    'alone', 'along', 'already', 'also', 'although', 'am', 'among', 'amongst', 'an', 'and', 'another',
-    'any', 'anyhow', 'anyone', 'anything', 'anyway', 'anywhere', 'are', 'aren', "aren't", 'around', 'as',
-    'at', 'back', 'been', 'before', 'beforehand', 'behind', 'being', 'below', 'beside', 'besides',
-    'between', 'beyond', 'both', 'but', 'by', 'can', 'cannot', 'could', 'couldn', "couldn't", 'd', 'didn',
-    "didn't", 'doesn', "doesn't", 'don', "don't", 'down', 'due', 'during', 'either', 'else', 'elsewhere',
-    'empty', 'enough', 'even', 'ever', 'everyone', 'everything', 'everywhere', 'except', 'first', 'for',
-    'former', 'formerly', 'from', 'hadn', "hadn't", 'hasn', "hasn't", 'haven', "haven't", 'he', 'hence',
-    'her', 'here', 'hereafter', 'hereby', 'herein', 'hereupon', 'hers', 'herself', 'him', 'himself', 'his',
-    'how', 'however', 'hundred', 'i', 'if', 'in', 'indeed', 'into', 'is', 'isn', "isn't", 'it', "it's",
-    'its', 'itself', 'just', 'latter', 'latterly', 'least', 'll', 'may', 'me', 'meanwhile', 'mightn',
-    "mightn't", 'mine', 'more', 'moreover', 'most', 'mostly', 'must', 'mustn', "mustn't", 'my', 'myself',
-    'namely', 'needn', "needn't", 'neither', 'never', 'nevertheless', 'next', 'no', 'nobody', 'none',
-    'noone', 'nor', 'not', 'nothing', 'now', 'nowhere', 'o', 'of', 'off', 'on', 'once', 'one', 'only',
-    'onto', 'or', 'other', 'others', 'otherwise', 'our', 'ours', 'ourselves', 'out', 'over', 'per',
-    'please', 's', 'same', 'shan', "shan't", 'she', "she's", "should've", 'shouldn', "shouldn't", 'somehow',
-    'something', 'sometime', 'somewhere', 'such', 't', 'than', 'that', "that'll", 'the', 'their', 'theirs',
-    'them', 'themselves', 'then', 'thence', 'there', 'thereafter', 'thereby', 'therefore', 'therein',
-    'thereupon', 'these', 'they', 'this', 'those', 'through', 'throughout', 'thru', 'thus', 'to', 'too',
-    'toward', 'towards', 'under', 'unless', 'until', 'up', 'upon', 'used', 've', 'was', 'wasn', "wasn't",
-    'we', 'were', 'weren', "weren't", 'what', 'whatever', 'when', 'whence', 'whenever', 'where',
-    'whereafter', 'whereas', 'whereby', 'wherein', 'whereupon', 'wherever', 'whether', 'which', 'while',
-    'whither', 'who', 'whoever', 'whole', 'whom', 'whose', 'why', 'with', 'within', 'without', 'won',
-    "won't", 'would', 'wouldn', "wouldn't", 'y', 'yet', 'you', "you'd", "you'll", "you're", "you've",
-    'your', 'yours', 'yourself', 'yourselves', 'have', 'be'
-]
+@dataclass
+class LexicalUnits:
+    unit_type: str
+    text: List[str]
+    self_info: List[float] = None
 
-DEFAULT_TEMPLATES = [
-    '( ROOT ( S ( NP ) ( VP ) ( . ) ) ) EOP',
-    '( ROOT ( S ( VP ) ( . ) ) ) EOP',
-    '( ROOT ( NP ( NP ) ( . ) ) ) EOP',
-    '( ROOT ( FRAG ( SBAR ) ( . ) ) ) EOP',
-    '( ROOT ( S ( S ) ( , ) ( CC ) ( S ) ( . ) ) ) EOP',
-    '( ROOT ( S ( LST ) ( VP ) ( . ) ) ) EOP',
-    '( ROOT ( SBARQ ( WHADVP ) ( SQ ) ( . ) ) ) EOP',
-    '( ROOT ( S ( PP ) ( , ) ( NP ) ( VP ) ( . ) ) ) EOP',
-    '( ROOT ( S ( ADVP ) ( NP ) ( VP ) ( . ) ) ) EOP',
-    '( ROOT ( S ( SBAR ) ( , ) ( NP ) ( VP ) ( . ) ) ) EOP'
-]
+    def __add__(self, other):
+        assert self.unit_type == other.unit_type, 'Cannot add two different unit types'
+        return LexicalUnits(self.unit_type, self.text + other.text, self.self_info + other.self_info)
+    
+    def __radd__(self, other):
+        if other == 0:
+            return self
+        return NotImplementedError()
+    
+    def add_to_head(self, token, self_info):
+        return LexicalUnits(self.unit_type, [token] + self.text, [self_info] + self.self_info)
+    
+    def add_to_tail(self, token, self_info):
+        return LexicalUnits(self.unit_type, self.text + [token], self.self_info + [self_info])
 
+@dataclass
+class ArxivArticle:
+    text: str
+    entry_id: str
+    title: str
+    sections: Dict[str, str]
+    context_type: str = None
+    units: List[LexicalUnits] = None
 
+    def __post_init__(self):
+        self.id = self.entry_id.split("/")[-1]
 
+    def __repr__(self):
+        return f"ArxivArticle: {self.title}\n\n"
 
-class Substitute(metaclass=abc.ABCMeta):
-    def __init__(self, victim_model):
-        self.victim_model = victim_model
+@dataclass
+class ConversationArticle(ArxivArticle):
+    num_rounds: int = 0
+    prompt: str = None
+    context: List[Tuple[str, str]] = None
 
-    @abc.abstractmethod
-    def substitute(self,    **kwargs):
-        raise Exception("Abstract method 'substitute' method not be implemented!")
+    def __repr__(self):
+        return f"ConversationArticle: {self.entry_id}\n\n"
 
+@dataclass
+class Conversation:
+    id: str
+    context: List[Tuple[str, str]]
 
-class SubstituteWithBert(Substitute):
-    def __init__(self, victim_model, device='cpu'):
-        super().__init__(victim_model)
-        self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-        self.predictor = AutoModelForMaskedLM.from_pretrained('bert-base-uncased')
-        self.predictor.to(device)
+@dataclass
+class ArxivContext:
+    text: str
+    entry_id: str
+    context: str
+    context_masked: bool
+    masked_sents: List[str] = None
 
-    @staticmethod
-    # Get antonyms of a word using WordNet
-    def get_word_antonyms(word):
-        antonyms_lists = set()
-        for syn in wn.synsets(word):
-            for l in syn.lemmas():
-                if l.antonyms():
-                    antonyms_lists.add(l.antonyms()[0].name())
-        return list(antonyms_lists)
+    def __post_init__(self):
+        self.id = self.entry_id.split("/")[-1]
 
-    def substitute(self, hypothesis, origin_sentence, masked_sentence, label, attack_type):
-        info_dict = dict()
-        info_dict['done'] = False
-        info_dict['adv'] = None
-        info_dict['suc_advs'] = None
-        info_dict['advs'] = None
-        info_dict['prob'] = 0
-        info_dict['query'] = 0
+    def __repr__(self):
+        return f"ArxivContext:\n --{self.context}\n\n"
+    
+    
+def get_self_information(text, num_retry = 5):
+    # text = text[:1000]
+    openai.api_key = os.environ["OPENAI_API_KEY"]
 
-        inputs = self.tokenizer(masked_sentence, return_tensors='pt')
-        tokenized_sentence = inputs['input_ids']
-
-        for i in range(tokenized_sentence.size()[1]):
-            if tokenized_sentence[0][i] == 103:
-                index = i
-
-        # restrict max input length to 512
-        if inputs['input_ids'].size()[1] > 512:
-            inputs['input_ids'] = inputs['input_ids'][:, 0:512]
-            inputs['token_type_ids'] = inputs['token_type_ids'][:, 0:512]
-            inputs['attention_mask'] = inputs['attention_mask'][:, 0:512]
-
-        with torch.no_grad():
-            outputs = self.predictor(input_ids=inputs['input_ids'].to(self.predictor.device),
-                                     token_type_ids=inputs['token_type_ids'].to(self.predictor.device),
-                                     attention_mask=inputs['attention_mask'].to(self.predictor.device))
-        logits = torch.softmax(outputs.logits[0][index], -1)
-
-        # Filter out antonyms predicted by BERT
-        mask_index = masked_sentence.split(' ').index('[MASK]')
+    for _ in range(num_retry):
         try:
-            masked_word = origin_sentence.split(' ')[mask_index]
+            r = openai.Completion.create(
+                model="curie",
+                prompt=f"<|endoftext|>{text}",
+                max_tokens=0,
+                temperature=0,
+                echo=True,
+                logprobs=0,
+            )
+            break
         except Exception as e:
-            print(masked_sentence)
-            print(origin_sentence)
-            print(len(masked_sentence), len(origin_sentence))
-            return info_dict
+            print(e)
+            time.sleep(1)
 
-        antonyms_list = self.get_word_antonyms(masked_word)
+    result = r['choices'][0]
+    tokens, logprobs = result["logprobs"]["tokens"][1:], result["logprobs"]["token_logprobs"][1:]
 
-        probs, indices = torch.topk(logits, 10)
-        indices = indices.to('cpu').numpy().tolist()
-        pred_list = self.tokenizer.convert_ids_to_tokens(indices)
+    assert len(tokens) == len(logprobs), f"Expected {len(tokens)} logprobs, got {len(logprobs)}"
 
-        remove_list = []
-        for i, word in enumerate(pred_list):
-            if word in antonyms_list:
-                remove_list.append(indices[i])
+    self_info = [ -logprob for logprob in logprobs]
+    # TODO: deal with the first delimiter
+    return tokens, self_info
 
-        for i in remove_list:
-            indices.remove(i)
 
-        info_dict['query'] += len(indices)
 
-        # Substitute the original sentence with words predicted by BERT
-        modified_sentences = []
-        for i, location in enumerate(indices):
-            tokenized_sentence[0][index] = location
-            modified_sentence_ids = tokenized_sentence[0][1:-1]
+class ArxivContextManager:
+    """
+        Loading arxiv articles, and process the article to sections.
+        Obtaining the context of interest and do the partially masking (optional).
 
-            modified_sentences_tokens = self.tokenizer.convert_ids_to_tokens(modified_sentence_ids)
-            modified_sentence = self.tokenizer.convert_tokens_to_string(modified_sentences_tokens)
-            modified_sentences.append(modified_sentence)
+        Args:
+            - mask_method: "Random", "self-info-sent" or "no". Randomly mask the context or mask the context based on the perplexity.
+    """
 
-        with torch.no_grad():
-            if hypothesis:
-                inputs = [[premise, hypothesis] for premise in modified_sentences]
+    def __init__(
+        self,
+        path : str,
+        mask_ratio = 0.2, 
+        keep_leading_word = True,
+        num_lead_words = 3,
+        ppl_threshold = None,
+        tokenizer = None,
+        compute_self_info = True,
+        sent_mask_token = "<...some content omitted.>",
+        phrase_mask_token = "",
+        num_articles = 200,
+        lang = "en",
+    ):
+        self.path = path
+        self.lang = lang
+        self._prepare_phrase_tokenizer()
+        self.num_articles = num_articles
+        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2") if tokenizer is None else tokenizer
 
-            else:
-                inputs = modified_sentences
+        self.keep_leading_word = keep_leading_word
+        self.num_lead_words = num_lead_words
+        self.ppl_threshold = ppl_threshold
+        self.max_token_len = 1800
+        self.sent_level_self_info = True
+        self.mask_ratio = mask_ratio
 
-            outputs = self.victim_model(sentences=inputs)
+        self.mask_token = sent_mask_token
+        self.phrase_mask_token = phrase_mask_token
 
-        suc_advs = []
-        for i, pred_label in enumerate(outputs.pred_labels):
-            if pred_label.item() != label:
-                suc_advs.append(modified_sentences[i])
+        # self.sent_tokenize_pattern = r"((?<!e\.g)(?<!i\.e)(?<!w\.r\.t)(?<=\.)\s)|(?<=\?\s)|(?<=!\s)"
+        # self.sent_tokenize_pattern = r"(?<!e\.g)(?<!i\.e)(?<=\.\s)|(?<=\?\s)|(?<=!\s)"
+        self.sent_tokenize_pattern = r"(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s"
+        self.load_articles(path)
+        self._prepare_self_info()
+    
+    def _prepare_phrase_tokenizer(self):
+        # we use space to tokenize sentence into phrases
+        # for English, we should use `spacy.load("en_core_web_sm").add_pipe('merge_noun_chunks')`
+        # for Chinese, use `nlp = spacy.load('zh_core_web_sm')`` directly
+        lang = self.lang
+        if lang == "en":
+            self.nlp = spacy.load("en_core_web_sm", disable=["ner"])
+            self.nlp.add_pipe('merge_noun_chunks')
+        elif lang == "zh":
+            self.nlp = spacy.load('zh_core_web_sm', disable=["ner"])
+    
+    def _prepare_self_info(self):
+        logging.info("Preparing self information...")
+        articles = []
+        for article_idx, article in tqdm(enumerate(self.articles), desc="Preparing self information"):
+            if article.units is not None:
+                # means the LexicalUnits has been calculated
+                articles.append(article)
+                continue
+            intro = self.beautify_context(article.sections[0])
 
-        if len(suc_advs) > 0:
-            info_dict['done'] = True
-            info_dict['suc_advs'] = suc_advs
+            if not self.varify_context_length(intro):
+                continue
+            sents = re.split(self.sent_tokenize_pattern, intro)
+            sents = [sent.strip() for sent in sents if sent.strip()]
 
+            if len(sents) == 0:
+                continue
+
+            try:
+                article.units = self._lexical_unit(sents)
+            except Exception as e:
+                logging.error(f"Error in article {article_idx}: {e}")
+                traceback.print_exc()
+                articles = articles + self.articles[article_idx:]
+                self.articles = articles
+                self._check_point(f'Error _preparing_self_info {article_idx}: {e}')
+                exit(1)
+            
+            articles.append(article)
+
+        self.articles = articles
+        self._check_point('Finished _preparing_self_info')
+    
+    def _lexical_unit(self, sents):
+
+        if self.sent_level_self_info:
+            sent_self_info = []
+            all_noun_phrases = []
+            all_noun_phrases_info = []
+            all_tokens = []
+            all_token_self_info = []
+
+            for sent in sents:
+                tokens, self_info = get_self_information(sent)
+                sent_self_info.append(np.mean(self_info))
+
+                all_tokens.extend(tokens)
+                all_token_self_info.extend(self_info)
+
+                noun_phrases, noun_phrases_info = self._calculate_lexical_unit(tokens, self_info)
+                
+                if len(all_noun_phrases) != 0:
+                    noun_phrases[0] = f" {noun_phrases[0]}"
+                all_noun_phrases.extend(noun_phrases)
+                all_noun_phrases_info.extend(noun_phrases_info)
+            
+            return [
+                LexicalUnits('sent', text=sents, self_info=sent_self_info),
+                LexicalUnits('phrase', text=all_noun_phrases, self_info=all_noun_phrases_info),
+                LexicalUnits('token', text=all_tokens, self_info=all_token_self_info)
+            ]
+            
         else:
-            if attack_type == 'score':
-                index = torch.argmin(outputs.probs[:, label], 0)
-                prob = outputs.probs[index][label]
-                info_dict['prob'] = prob
-                info_dict['adv'] = modified_sentences[index]
+            sents = sent_tokenize(context)
+            context = ' '.join(sents)
+            tokens, self_info = get_self_information(context)
+            sent_lexical_units, phrase_lexical_units =  self._calculate_lexical_unit(tokens, self_info)
 
-            elif attack_type == 'decision':
-                info_dict['advs'] = modified_sentences
+            return [
+                sent_lexical_units,
+                phrase_lexical_units,
+                LexicalUnits('token', text=tokens, self_info=self_info)
+            ]
 
-        return info_dict
+    def _calculate_lexical_unit(self, tokens, self_info):
+        def _unit_info(tokens, self_info, units):
+            current_unit_idx = 0
+            current_position = 0
+            unit_self_info = [[] for _ in range(len(units))]
 
+            for idx, (token, info) in enumerate(zip(tokens, self_info)):
+                current_position += len(token)
+                if current_position == len(units[current_unit_idx]):
+                    unit_self_info[current_unit_idx].append(info)
+                    current_position = current_position - len(units[current_unit_idx])
+                    current_unit_idx += 1
+                elif current_position > len(units[current_unit_idx]):
+                    counter_ = 1
+                    current_position = current_position - len(units[current_unit_idx])
+                    current_unit_idx += 1
+                    while current_position >= len(units[current_unit_idx]):
+                        counter_ += 1
+                        current_position = current_position - len(units[current_unit_idx])
+                        current_unit_idx += 1
+                        if current_unit_idx >= len(units):
+                            break
+                    partial_info = info/counter_
+                    for _ in range(counter_):
+                        unit_self_info[(current_unit_idx-1) - _].append(partial_info)
+                else:
+                    if token == " ":
+                        continue
+                    unit_self_info[current_unit_idx].append(info)
+            
+            unit_self_info_ = [np.mean(info) for info in unit_self_info]
+            return unit_self_info_
+        
+        def _noun_phrases(sent):
+            noun_phrases = []
+            doc = self.nlp(sent)
+            for index, chunk in enumerate(doc):
+                if index == 0:
+                    noun_phrases.append(chunk.text)
+                else:
+                    noun_phrases.append(doc[index-1].whitespace_ + chunk.text)
+            return noun_phrases
 
-class SubstituteWithWordnet(Substitute):
-    def __init__(self, victim_model):
-        super().__init__(victim_model)
-        self.pos_dict = {'NOUN': 'n', 'VERB': 'v', 'ADV': 'r', 'ADJ': 'a'}
-        self.pos_processor = stanza.Pipeline('en', processors='tokenize, mwt, pos, lemma')
+        if self.sent_level_self_info:
+            # in this case, the self_info is for each sentence
+            # we only need to calculate the self_info for each phrase
 
-    def get_pos(self, sentence, mask_index):
-        processed_sentence = self.pos_processor(sentence)
-        pos_list = []
-        word_lemma = None
+            sent = ''.join(tokens)
+            # noun_phrases = [chunk.text for chunk in self.nlp(sent).noun_chunks]
+            noun_phrases = _noun_phrases(sent)
+            # noun_phrases[-1] = noun_phrases[-1] + ' '
+            noun_phrases_info = _unit_info(tokens, self_info, noun_phrases)
 
-        for sentence in processed_sentence.sentences:
-            for i, word in enumerate(sentence.words):
-                pos_list.append(word.upos)
-                if i == mask_index:
-                    word_lemma = word.lemma
-
-        return pos_list, word_lemma
-
-    def get_synonyms(self, word, pos):
-        if pos not in self.pos_dict.keys():
-            return []
-
-        synonyms = set()
-        for syn in wn.synsets(word):
-            if syn.pos() == self.pos_dict[pos]:
-                for lemma in syn.lemmas():
-                    synonyms.add(lemma.name())
-
-        if word in synonyms:
-            synonyms.remove(word)
-
-        return list(synonyms)
-
-    def substitute(self, hypothesis, origin_sentence, masked_sentence, label, attack_type):
-        info_dict = dict()
-        info_dict['done'] = False
-        info_dict['adv'] = None
-        info_dict['suc_advs'] = None
-        info_dict['prob'] = 0
-        info_dict['query'] = 0
-
-        word_list = masked_sentence.split(' ')
-        mask_index = word_list.index('[MASK]')
-
-        pos_list, word_lemma = self.get_pos(origin_sentence, mask_index)
-        masked_word_pos = pos_list[mask_index]
-
-        synonyms = self.get_synonyms(word_lemma, masked_word_pos)
-        if not synonyms:
-            return info_dict
-
-        modified_sentences = []
-        for synonym in synonyms:
-            word_list[mask_index] = synonym
-            modified_sentence = ' '.join(word for word in word_list)
-            modified_sentences.append(modified_sentence)
-
-        info_dict['query'] += len(modified_sentences)
-        with torch.no_grad():
-            outputs = self.victim_model(sentences=modified_sentences)
-
-        suc_advs = []
-        for i, pred_label in enumerate(outputs.pred_labels):
-            if pred_label.item() != label:
-                suc_advs.append(modified_sentences[i])
-
-        if len(suc_advs) > 0:
-            info_dict['done'] = True
-            info_dict['suc_advs'] = suc_advs
-
+            return noun_phrases, noun_phrases_info
+        
         else:
-            if attack_type == 'score':
-                index = torch.argmin(outputs.probs[:, label], 0)
-                prob = outputs.probs[index][label]
-                info_dict['prob'] = prob
-                info_dict['adv'] = modified_sentences[index]
+            # in this case, the self_info is for the entire context
+            # we need to first calculate the self_info for each sentence
+            # then calculate the self_info for each phrase
 
-            elif attack_type == 'decision':
-                info_dict['advs'] = modified_sentences
+            sents = re.split(self.sent_tokenize_pattern, ''.join(tokens))
+            sents = [sents[0][:-1]] + [' ' + sent[:-1] for sent in sents[1:-1]] + [' ' + sents[-1]]
 
-        return info_dict
+            sent_self_info = _unit_info(tokens, self_info, sents)
 
+            # now we got sentence self_info, we need to calculate the self_info for each phrase
+            all_noun_phrases = []
+            all_noun_phrases_info = []
+            for sent, sent_info in zip(sents, sent_self_info):
+                noun_phrases = _noun_phrases(sent)
+                # noun_phrases[-1] = noun_phrases[-1] + ' '
+                noun_phrases_info = _unit_info(tokens, self_info, noun_phrases)
+                all_noun_phrases.extend(noun_phrases)
+                all_noun_phrases_info.extend(noun_phrases_info)
 
+            return LexicalUnits('sent', text = sents, self_info = sent_self_info), LexicalUnits('phrase', text = all_noun_phrases, self_info = all_noun_phrases_info)
+    
+    def load_articles(self, path: str, start_point : int = 0) -> List[ArxivArticle]:
+        self.articles = []
+        logging.info(f"Start preprocessing Arxiv articles from {path}")
+        for file_path in tqdm(glob(os.path.join(path, "*.json"))[:self.num_articles], desc="Loading Arxiv articles"):
+            with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
+                article = json.load(f)
+                entry_id = article["entry_id"]
+                title = article["title"]
+                text = article["text"]
 
+                # remove anything before introduction
+                text = re.sub(r"^.*?(§)", r"\1", text, flags=re.DOTALL)
 
-class GrammarChecker:
-    def __init__(self):
-        # self.lang_tool = language_tool_python.LanguageTool('en-US')
-        self.lang_tool = language_tool_python.LanguageToolPublicAPI('es')
+                # split article into sections
+                sections = re.split(r"(?<!§\.)§\s", text)
+                sections = [self.beautify_context(section) for section in sections if section.strip()]
+            
+            if len(sections) == 0:
+                continue
+            
+            self.articles.append(ArxivArticle(text=text, entry_id=entry_id, title=title, sections=sections))
+        
+        logging.info(f"Finish preprocessing Arxiv articles. Loaded {len(self.articles)} documents.")
+    
+    def beautify_context(self, context: str) -> str:
+        context = context.replace("<cit.>", '').replace('<ref>', '')
+        context = re.sub(r"\s+", " ", context)
+        context = re.sub(r"\n+", " ", context)
+        return context
+    
+    def varify_context_length(self, context: str) -> bool:
+        if context is None:
+            return False
+        num_tokens = len(self.tokenizer(context)['input_ids'])
+        if num_tokens > self.max_token_len:
+            return False
+        return True
 
-    def check(self, sentence):
-        '''
-        :param sentence:  a string
-        :return:
-        '''
-        matches = self.lang_tool.check(sentence)
-        return len(matches)
+    def generate_context(self, mask_method: str, mask_level: str = 'sent', num_articles : int = None) -> List[ArxivContext]:
+        assert mask_method in ["Random", "self-info", "no", "no2"]
+        resulting_contexts = []
 
+        if num_articles is None or num_articles > len(self.articles):
+            num_articles = len(self.articles)
 
+        for article in tqdm(self.articles, desc="Generating contexts"):
+            if len(resulting_contexts) >= num_articles:
+                break
+            if not self.varify_context_length(self.beautify_context(article.sections[0])):
+                continue
+            if mask_level == 'sent':
+                lexical_units = article.units[0]
+                assert lexical_units.unit_type == 'sent'
+            elif mask_level == 'phrase':
+                lexical_units = article.units[1]
+                assert lexical_units.unit_type == 'phrase'
+            elif mask_level == 'token':
+                lexical_units = article.units[2]
+                assert lexical_units.unit_type == 'token'
 
-class SentenceEncoder:
-    def __init__(self, device='cuda'):
-        '''
-        different version of Universal Sentence Encoder
-        https://pypi.org/project/sentence-transformers/
-        '''
-        self.model = SentenceTransformer('paraphrase-distilroberta-base-v1', device)
+            if mask_method == "Random":
+                context, masked_sents = self.random_mask_context(lexical_units.text, mask_level)
+            elif mask_method == "self-info":
+                context, masked_sents = self.self_info_mask(lexical_units.text, lexical_units.self_info, mask_level)
+            elif ( self.__class__.__name__ == 'ConversationContextManager' and \
+                mask_method == "no" ):
 
-    def encode(self, sentences):
-        '''
-        can modify this code to allow batch sentences input
-        :param sentence: a String
-        :return:
-        '''
-        if isinstance(sentences, str):
-            sentences = [sentences]
-        return self.model.encode(sentences, convert_to_tensor=True)
+                # in this case, we want to use the last sentence as the reference answer
+                context = article.context[-1][1]
+                masked_sents = None
+            
+            elif ( self.__class__.__name__ == 'ConversationContextManager' and \
+                mask_method == "no2" ):
 
-    def get_sim(self, sentence1: str, sentence2: str):
-        '''
-        can modify this code to allow batch sentences input
-        :param sentence1: a String
-        :param sentence2: a String
-        :return:
-        '''
-        embeddings = self.model.encode([sentence1, sentence2], convert_to_tensor=True)
-        cos_sim = util.pytorch_cos_sim(embeddings[0], embeddings[1])
-        return cos_sim.item()
+                # in this case, we use the entire context (except the last responses) as prompt
+                context = article.prompt
+                masked_sents = None
+            
+            elif mask_method == "no" or mask_method == "no2":
+                context = article.sections[0]
+                context = self.beautify_context(context)
+                masked_sents = None
 
-    # find adversarial sample in advs which matches ori best
-    def find_best_sim(self, ori, advs, find_min=False):
-        ori_embedding = self.model.encode(ori, convert_to_tensor=True)
-        adv_embeddings = self.model.encode(advs, convert_to_tensor=True)
-        best_adv = None
-        best_index = None
-        best_sim = 10 if find_min else -10
-        for i, adv_embedding in enumerate(adv_embeddings):
-            sim = util.pytorch_cos_sim(ori_embedding, adv_embedding).item()
-            if find_min:
-                if sim < best_sim:
-                    best_sim = sim
-                    best_adv = advs[i]
-                    best_index = i
+            resulting_contexts.append(
+                ArxivContext(text=article.text, entry_id=article.entry_id, context=context, context_masked=(mask_method != "no"), masked_sents=masked_sents)
+            )
 
+        logging.info(f"Finish generating {len(resulting_contexts)} contexts.")
+        return resulting_contexts
+    
+    def _check_point(self, message = '') -> bool:
+        pickle_file = os.path.join(self.path, f"{self.__class__.__name__}_{'sent' if self.sent_level_self_info else 'paragraph'}.pkl")
+        logging.info(f"saved to {pickle_file}. {message}")
+        print(f"saved to {pickle_file}. {message}")
+        with FileLock(pickle_file + ".lock", timeout=100):
+            with open(pickle_file, "wb") as f:
+                pickle.dump(self, f)
+    
+    def self_info_mask(self, sents: List[str], self_info: List[float], mask_level):
+        # mask_level: mask sentences, phrases, or tokens
+        sents_after_mask = []
+        masked_sents = []
+                
+        self.ppl_threshold = np.nanpercentile(self_info, self.mask_ratio * 100)
+
+        for sent, info in zip(sents, self_info):
+            if info < self.ppl_threshold:
+                masked_sents.append(sent)
+                sents_after_mask.append(self.mask_a_sent(sent, mask_level))
             else:
-                if sim > best_sim:
-                    best_sim = sim
-                    best_adv = advs[i]
-                    best_index = i
+                sents_after_mask.append(sent)
+        masked_context = " ".join(sents_after_mask) if mask_level == 'sent' else "".join(sents_after_mask)
+        
+        return masked_context, masked_sents
 
-        return best_adv, best_index, best_sim
+    def calculate_sent_self_info(self, context, tokens, self_info) -> List[Tuple[str, float]]:
+        sents = re.split(self.sent_tokenize_pattern, ''.join(tokens))
+        sents = [sents[0][:-1]] + [' ' + sent[:-1] for sent in sents[1:-1]] + [' ' + sents[-1]]
+        current_sent_idx = 0
+        current_position = 0
+        sent_self_info = [[] for _ in range(len(sents))]
+        start = 0
+        for idx, (token, info) in enumerate(zip(tokens, self_info)):
+            current_position += len(token)
 
-
-class USE:
-    def __init__(self):
-        self.embed = hub.load("https://tfhub.dev/google/universal-sentence-encoder/4")
-
-    def count_use(self, sentence1: str, sentence2: str):
-        embeddings = self.embed([sentence1, sentence2])
-        vector1 = tf.reshape(embeddings[0], [512, 1])
-        vector2 = tf.reshape(embeddings[1], [512, 1])
-
-        return tf.matmul(vector1, vector2, transpose_a=True).numpy()[0][0]
+            if current_position >= len(sents[current_sent_idx]):
+                end = idx
+                # print(tokens[start:end+1], '^^', sents[current_sent_idx])
+                # print(current_position, len(sents[current_sent_idx]), current_sent_idx)
+                start = end + 1
+                sent_self_info[current_sent_idx].append(info)
+                current_position = current_position - len(sents[current_sent_idx])
+                current_sent_idx += 1
+            else:
+                # print(current_position)
+                if token == ' ':
+                    continue
+                sent_self_info[current_sent_idx].append(info)
+        
+        sent_self_info = [np.mean(info) for info in sent_self_info]
+        return sent_self_info
     
-    
-    
-class ConstituencyParser:
-    def __init__(self):
-        self.parser = Parser.load('crf-con-en')
+    def random_mask_context(self, sents: List[str], level) -> str:
+        sents_after_mask = []
+        masked_sents = []
+        for sent in sents:
+            if random.random() < self.mask_ratio:
+                masked_sents.append(sent)
+                sents_after_mask.append(self.mask_a_sent(sent, level))
+            else:
+                sents_after_mask.append(sent)
+        masked_context = " ".join(sents_after_mask)
+        return masked_context, masked_sents
 
-    @staticmethod
-    def __sentence_to_list(sentence:str):
-        word_list = sentence.strip().replace('(', '[').replace(')', ']').split(' ')
-        while '' in word_list:
-            word_list.remove('')
-        return word_list
+    def mask_a_sent(self, sent, level):
+        if level == 'phrase':
+            return self.phrase_mask_token
+        elif level == 'sent':
+            if self.keep_leading_word:
+                leading_few_words = " ".join(word_tokenize(sent)[:self.num_lead_words]) + " "
+            else:
+                leading_few_words = ""
+            return leading_few_words + self.mask_token
+        elif level == 'token':
+            return ''
+    
+    @classmethod
+    def from_checkpoint(cls, pickle_path, **kwargs):
+        with FileLock(pickle_path + ".lock", timeout=100):
+            with open(pickle_path, 'rb') as f:
+                manager = pickle.load(f)
+        for k,v in kwargs.items():
+            setattr(manager, k, v)
+        manager._prepare_self_info()
+        return manager
 
-    def get_tree(self, sentence):
-        word_list = self.__sentence_to_list(sentence)
-        if len(word_list) == 0:
+
+
+class ConversationContextManager(ArxivContextManager):
+    
+    def __init__(
+        self,
+        path : str,
+        mask_ratio = 0.2, 
+        keep_leading_word = True,
+        num_lead_words = 3,
+        ppl_threshold = None,
+        tokenizer = None,
+        compute_self_info = True,
+        sent_mask_token = "<...some content omitted.>",
+        phrase_mask_token = "",
+        num_articles = 200,
+        lang = "en",
+    ):
+        self.path = path
+        self.lang = lang
+        self._prepare_phrase_tokenizer()
+        self.num_articles = num_articles
+        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2") if tokenizer is None else tokenizer
+
+        self.keep_leading_word = keep_leading_word
+        self.num_lead_words = num_lead_words
+        self.ppl_threshold = ppl_threshold
+        self.max_token_len = 1800
+        self.sent_level_self_info = True
+        self.mask_ratio = mask_ratio
+
+        self.mask_token = sent_mask_token
+        self.phrase_mask_token = phrase_mask_token
+
+        # self.sent_tokenize_pattern = r"((?<!e\.g)(?<!i\.e)(?<!w\.r\.t)(?<=\.)\s)|(?<=\?\s)|(?<=!\s)"
+        # self.sent_tokenize_pattern = r"(?<!e\.g)(?<!i\.e)(?<=\.\s)|(?<=\?\s)|(?<=!\s)"
+        self.sent_tokenize_pattern = r"(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s"
+        self.load_articles(path)
+        self._prepare_self_info()
+        
+    def _prepare_phrase_tokenizer(self):
+        # we use space to tokenize sentence into phrases
+        # for English, we should use `spacy.load("en_core_web_sm").add_pipe('merge_noun_chunks')`
+        # for Chinese, use `nlp = spacy.load('zh_core_web_sm')`` directly
+        lang = self.lang
+        if lang == "en":
+            self.nlp = spacy.load("en_core_web_sm", disable=["ner"])
+            self.nlp.add_pipe('merge_noun_chunks')
+        elif lang == "zh":
+            self.nlp = spacy.load('zh_core_web_sm', disable=["ner"])
+    
+    def load_articles(self, path):
+        self.articles = []
+        with open(os.path.join(path, 'conversation_2k.json'), 'r', encoding='utf-8') as f:
+            for line in f.readlines():
+                if len(self.articles) > self.num_articles:
+                    break
+                conversation = json.loads(line)
+                conversation = self._parse_conversation(conversation)
+                article = self._build_article(conversation)
+                if article is not None and article.num_rounds >=4:
+                    self.articles.append(article)
+    
+    def _build_article(self, conversation: Conversation):
+        lines = []
+        for utterence in conversation.context:
+            line = f"{utterence[0]}: {utterence[1]}"
+            punt = line[-1]
+            if punt not in ['.', '!', '?']:
+                line += '.'
+            lines.append(line)
+        content = '\n'.join(lines)
+        if not self.varify_context_length(content):
             return None
-        try:
-            prediction = self.parser.predict(word_list, verbose=False)
-            return prediction.trees[0]
+        prompt = '\n'.join(lines[:-1])
+        last_response = conversation.context[-1][1]
+        article = ConversationArticle(text=content, entry_id=conversation.id, title='', sections=[content, last_response], num_rounds=len(conversation.context), context = conversation.context)
+        return article
+    
+    def _parse_conversation(self, conversation):
+        id = conversation['id']
+        convs = []
+        for sent in conversation['conversations']:
+            role = sent['from']
+            if role != 'human':
+                bsobj = BeautifulSoup(sent['value'])
+                for tag_name in ['p', 'br', 'div', 'li', 'h1', 'h2', 'h3',]:
+                    for tag in bsobj.find_all(tag_name):
+                        if tag.string is not None:
+                            tag.string.replace_with(tag.string + ' ')
+                value = bsobj.get_text()
+            else:
+                value = sent['value']
+            convs.append((role, value))
+        return Conversation(id, convs)
+    
+    def _prepare_self_info(self):
+        logging.info("Preparing self information...")
+        articles = []
+        for article_idx, article in tqdm(enumerate(self.articles), desc="Preparing self information"):
+            if article.units is not None:
+                # means the LexicalUnits has been calculated
+                articles.append(article)
+                continue
 
-        except Exception as e:
-            print('error: cannot get tree!')
-            return None
+            sent_units = []
+            phrase_units = []
+            token_units = []
+            # here, we do not use the last utterance as part of the prompt. because it's the response
+            for role, utterance in article.context[:-1]:
+                sents = re.split(self.sent_tokenize_pattern, utterance)
+                sents = [sent.strip() for sent in sents if sent.strip()]
 
-    def __call__(self, sentence):
-        root = self.get_tree(sentence)
-        if root is None:
-            return None, []
+                if len(sents) == 0:
+                    continue
 
-        node_list = pd.DataFrame(
-            columns=['sub_tree', 'phrase', 'index', 'label', 'length'],
-        )
-        rows_to_concat = []
-        for index in root.treepositions():
-            sub_tree = root[index]
-            if isinstance(sub_tree, Tree):
-                if len(sub_tree.leaves()) > 1:
-                    phrase = ' '.join(word for word in sub_tree.leaves())
-                    rows_to_concat.append({
-                        'sub_tree': sub_tree,
-                        'phrase': phrase,
-                        'index': index,
-                        'label': sub_tree.label(),
-                        'length': len(sub_tree.leaves()),
-                    })
+                try:
+                    units = self._lexical_unit(sents)
+                except Exception as e:
+                    logging.error(f"Error in article {article_idx}: {e}")
+                    traceback.print_exc()
+                    articles = articles + self.articles[article_idx:]
+                    self.articles = articles
+                    self._check_point(f'Error _preparing_self_info {article_idx}: {e}')
+                    exit(1)
+                
+                sent_units.append(units[0].add_to_head(f' {role}: ', 100))
+                phrase_units.append(units[1].add_to_head(f' {role}: ', 100))
+                token_units.append(units[2].add_to_head(f' {role}: ', 100))
+            
+            article.units = [
+                sum(sent_units),
+                sum(phrase_units),
+                sum(token_units),
+            ]
+            
+            articles.append(article)
 
-        node_list = pd.concat([node_list, pd.DataFrame(rows_to_concat)])
-        node_list = node_list.drop_duplicates('phrase', keep='last')
-        return root, node_list.values
-
-
-class Paraphraser(metaclass=abc.ABCMeta):
-    @abc.abstractmethod
-    def paraphrase(self, sentences):
-        raise Exception("Abstract method 'substitute' method not be implemented!")
-
-class T5(Paraphraser):
-    def __init__(self, device='cuda'):
-        super().__init__()
-        model_name = 'tuner007/pegasus_paraphrase'
-        self.max_length = 512
-        self.device = device
-        self.tokenizer = PegasusTokenizer.from_pretrained(model_name)
-        self.model = PegasusForConditionalGeneration.from_pretrained(
-            model_name,
-            max_length=self.max_length,
-            max_position_embeddings=self.max_length,
-        ).to(self.device)
-
-    def paraphrase(self, sentences):
-        with torch.no_grad():
-            tgt_text = []
-            for sentence in sentences:
-                batch = self.tokenizer(
-                    [sentence],
-                    truncation=True,
-                    padding='longest',
-                    max_length=int(len(sentence.split(' '))*1.2),
-                    return_tensors="pt",
-                ).to(self.device)
-
-                translated = self.model.generate(
-                    **batch,
-                    max_length=self.max_length,
-                    min_length=int(len(sentence.split(' '))*0.8),
-                    num_beams=1,
-                    num_return_sequences=1,
-                    temperature=1.5,
-                )
-                tgt_text += self.tokenizer.batch_decode(
-                    translated, 
-                    skip_special_tokens=True,
-                )
-            return tgt_text
+        self.articles = articles
+        # self._check_point('Finished _preparing_self_info')
+        
+        
+    def varify_context_length(self, context: str) -> bool:
+        if context is None:
+            return False
+        num_tokens = len(self.tokenizer(context)['input_ids'])
+        if num_tokens > self.max_token_len:
+            return False
+        return True
