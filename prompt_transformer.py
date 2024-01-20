@@ -1,9 +1,12 @@
+import os
 import sys 
 sys.dont_write_bytecode = True
+sys.setrecursionlimit(2000)  # Increase the limit, 2000 is just an example
 from tqdm import tqdm
 from typing import Optional, List, Tuple, Dict, Union, Any
 import torch 
 from torch.optim import AdamW
+from torch.utils.data import DataLoader
 from transformers import (
     AutoConfig, 
     AutoTokenizer, 
@@ -26,12 +29,14 @@ class PromptTransformer:
         task: Optional[str] = None,
         optimizer: Optional[torch.optim.Optimizer] = None,
         lr: Optional[float] = 5e-5,
-        batch_size: Optional[int] = 1,
+        batch_size: Optional[int] = 3,
         max_length: Optional[int] = 2096,
         max_new_tokens: Optional[int] = 2096,
         ignore_pad_token_for_loss: Optional[bool] = True,
         num_epochs: Optional[int] = 1,
         device: Optional[str] = 'cuda:0',
+        output_dir: Optional[str] = 'results',
+        saving_step: Optional[int] = 100,
     ):
         if model_name is None:
             model_name = 't5-base'
@@ -43,6 +48,9 @@ class PromptTransformer:
         self.device = device
         self.max_length = max_length
         self.max_new_tokens = max_new_tokens
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        self.saving_step = saving_step
         
         if llm_model_name is not None:
             llm_model_name = 'meta-llama/Llama-2-7b-hf'
@@ -59,7 +67,6 @@ class PromptTransformer:
         self.optimizer = optimizer   
         if optimizer is None:
             self.optimizer = AdamW(self.model.parameters(), lr=lr)    
-        
             
         self.instruction, self.demonstrations, self.prefix, self.train_dataset, self.test_dataset = prompt_dataset(task=task)
         
@@ -112,7 +119,6 @@ class PromptTransformer:
         # rouge_score = RougeTest_rouge(answer, response, rouge_metric='avg_f')
         
         # Length reward
-        # length_reward = len(answer) / len(response)
         length_reward = len(self.tokenizer.tokenize(answer)) / len(self.tokenizer.tokenize(response))
     
         return length_reward, rouge_score
@@ -170,13 +176,13 @@ class PromptTransformer:
         self.llm_model.eval()
         
         # Generate new responses
-        print(f"{self.model.__class__.__name__} transforming prompt ...")
+        # print(f"{self.model.__class__.__name__} transforming prompt ...")
         with torch.no_grad():
             outputs = self.model.generate(**batch, max_length=self.max_length) # (batch_size, max_length)
         new_prompts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True) # (batch_size)
         answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True) # (batch_size)
         
-        print(f"{self.llm_model.__class__.__name__} generating response ...")
+        # print(f"{self.llm_model.__class__.__name__} generating response ...")
         llm_inputs = self.llm_tokenizer(
             new_prompts, 
             return_tensors='pt',
@@ -186,7 +192,7 @@ class PromptTransformer:
             llm_outputs = self.llm_model.generate(**llm_inputs, max_new_tokens=self.max_new_tokens)
         new_responses = self.llm_tokenizer.batch_decode(llm_outputs, skip_special_tokens=True)
 
-        print("Calculate rewards ...")
+        # print("Calculate rewards ...")
         # Calculate rewards
         rewards = [self.calculate_rewards(ans, resp) for ans, resp in zip(answers, new_responses)]
         length_rewards, quality_rewards = zip(*rewards)
@@ -194,7 +200,7 @@ class PromptTransformer:
 
         # TODO: Implement policy update logic based on rewards
         # This involves backpropagation and optimizer steps
-        print("Policy update ...")
+        # print("Policy update ...")
         weighted_loss = self.policy_update(
             self.tokenizer,
             self.model,
@@ -209,27 +215,51 @@ class PromptTransformer:
     def train(self):
         self.model.to(self.device)
         self.llm_model.to(self.device)
+        global_step = 0
         
         for epoch in range(self.num_epochs):
-            pbar = tqdm(self.train_dataloader, total=len(self.train_dataloader))
-            for batch in pbar:
+            pbar = tqdm(enumerate(self.train_dataloader), total=len(self.train_dataloader))
+            for step, batch in pbar:
                 batch = self.prepare_inputs(batch)
                 weighted_loss, avg_length_reward, avg_quality_reward = self.training_step(batch)
-                pbar.set_description(f'[epoch {epoch}] loss: {weighted_loss:.4f}, length reward: {avg_length_reward:.4f}, quality reward: {avg_quality_reward:.4f}')
+                global_step += 1
+                pbar.set_description(f'[step {global_step}] loss: {weighted_loss:.4f}, length reward: {avg_length_reward:.4f}, quality reward: {avg_quality_reward:.4f}')
+                if global_step % self.saving_step == 0:
+                    # Save model
+                    self.model.save_pretrained(f'{self.output_dir}/checkpoint-{global_step}')
                 
-            metrics = self.evaluate(self.model, self.test_dataloader)
+            metrics = self.evaluate(self.test_dataloader)
             print(f'[epoch {epoch}]: \n{metrics}')
-                
+            # Save metrics
+            with open(f'{self.output_dir}/metrics-{epoch}.txt', 'a') as f:
+                f.write(f'[epoch {epoch}]: \n{metrics}\n')
+            
     
     @torch.no_grad()
-    def eval_step(self, batch: Dict[str, Union[Any, torch.Tensor]], metrics: Dict[str, Any]):
+    def eval_step(
+        self, 
+        batch: Dict[str, Union[Any, torch.Tensor]], 
+        metrics: Dict[str, Any], 
+        use_transformation: bool = True,
+    ):
         self.model.eval()
-        # Generate new responses
-        outputs = self.model.generate(**batch, max_length=self.max_length) # (batch_size, max_length)
-        new_prompts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        self.llm_model.eval()
+        
+        if use_transformation:
+            # Generate new responses
+            outputs = self.model.generate(**batch, max_length=self.max_length) # (batch_size, max_length)
+            new_prompts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        else:
+            # Directly use llm inputs
+            new_prompts = self.tokenizer.batch_decode(batch['input_ids'], skip_special_tokens=True)    
+            
         answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True)
         
-        llm_inputs = self.llm_tokenizer(new_prompts, return_tensors='pt').to(batch.device)
+        llm_inputs = self.llm_tokenizer(
+            new_prompts, 
+            return_tensors='pt',
+            padding=True,
+        ).to(self.device)
         llm_outputs = self.llm_model.generate(**llm_inputs, max_new_tokens=self.max_new_tokens)
         new_responses = self.llm_tokenizer.batch_decode(llm_outputs, skip_special_tokens=True)
 
@@ -244,8 +274,13 @@ class PromptTransformer:
             metrics['length'].append(output.shape[0])
             
             
-    def evaluate(self):
+    def evaluate(
+        self, 
+        dataloader: DataLoader,
+        use_transformation: bool = True,
+    ):
         self.model.to(self.device)
+        self.llm_model.to(self.device)
         
         metrics = {
             'rouge-1': [],
@@ -254,9 +289,13 @@ class PromptTransformer:
             'length': [],
         }
         
-        for batch in self.test_dataloader:
+        for batch in tqdm(dataloader):
             batch = self.prepare_inputs(batch)
-            self.eval_step(batch, metrics)
+            self.eval_step(batch, metrics, use_transformation)
+            
+        # Average
+        for metric in metrics:
+            metrics[metric] = sum(metrics[metric]) / len(metrics[metric])
             
         return metrics
     
@@ -264,6 +303,11 @@ class PromptTransformer:
     
 if __name__ == '__main__':
     pt = PromptTransformer()
+    metrics = pt.evaluate(pt.test_dataloader, use_transformation=False)
+    print("Metrics without transformation: {}".format(metrics))
+    # Save metrics
+    with open(f'{pt.output_dir}/metrics(llm).txt', 'a') as f:
+        f.write(f'[before transformation]: \n{metrics}\n')
     pt.train()
         
     
