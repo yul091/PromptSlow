@@ -27,8 +27,8 @@ class PromptTransformer:
         optimizer: Optional[torch.optim.Optimizer] = None,
         lr: Optional[float] = 5e-5,
         batch_size: Optional[int] = 1,
-        max_length: Optional[int] = 1024,
-        max_new_tokens: Optional[int] = 4000,
+        max_length: Optional[int] = 2096,
+        max_new_tokens: Optional[int] = 2096,
         ignore_pad_token_for_loss: Optional[bool] = True,
         num_epochs: Optional[int] = 1,
         device: Optional[str] = 'cuda:0',
@@ -112,7 +112,8 @@ class PromptTransformer:
         # rouge_score = RougeTest_rouge(answer, response, rouge_metric='avg_f')
         
         # Length reward
-        length_reward = len(answer) / len(response)
+        # length_reward = len(answer) / len(response)
+        length_reward = len(self.tokenizer.tokenize(answer)) / len(self.tokenizer.tokenize(response))
     
         return length_reward, rouge_score
         
@@ -146,7 +147,7 @@ class PromptTransformer:
         # Weight log_probs by rewards and calculate loss
         weighted_loss = 0
         for i, (l_r, q_r) in enumerate(rewards):
-            weighted_loss += log_prob * (l_r + q_r)
+            weighted_loss += - log_prob * (l_r + q_r) # force larger rewards to be more important
         weighted_loss /= len(rewards)
 
         # Perform backpropagation
@@ -188,7 +189,8 @@ class PromptTransformer:
         print("Calculate rewards ...")
         # Calculate rewards
         rewards = [self.calculate_rewards(ans, resp) for ans, resp in zip(answers, new_responses)]
-        # length_rewards, quality_rewards = zip(*rewards)
+        length_rewards, quality_rewards = zip(*rewards)
+        avg_length_reward, avg_quality_reward = sum(length_rewards) / len(length_rewards), sum(quality_rewards) / len(quality_rewards)
 
         # TODO: Implement policy update logic based on rewards
         # This involves backpropagation and optimizer steps
@@ -201,7 +203,7 @@ class PromptTransformer:
             rewards,
             self.optimizer,
         )
-        return weighted_loss
+        return weighted_loss, avg_length_reward, avg_quality_reward
     
 
     def train(self):
@@ -212,8 +214,8 @@ class PromptTransformer:
             pbar = tqdm(self.train_dataloader, total=len(self.train_dataloader))
             for batch in pbar:
                 batch = self.prepare_inputs(batch)
-                weighted_loss = self.training_step(batch)
-                pbar.set_description(f'[epoch {epoch}] loss: {weighted_loss:.4f}')
+                weighted_loss, avg_length_reward, avg_quality_reward = self.training_step(batch)
+                pbar.set_description(f'[epoch {epoch}] loss: {weighted_loss:.4f}, length reward: {avg_length_reward:.4f}, quality reward: {avg_quality_reward:.4f}')
                 
             metrics = self.evaluate(self.model, self.test_dataloader)
             print(f'[epoch {epoch}]: \n{metrics}')
