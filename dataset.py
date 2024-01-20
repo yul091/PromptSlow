@@ -95,7 +95,7 @@ def get_dataloader(
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
     
-    dataset = train_dataset.map(
+    dataset = dataset.map(
         preprocess_function,
         batched=True,
         remove_columns=column_names,

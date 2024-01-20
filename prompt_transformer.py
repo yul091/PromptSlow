@@ -13,7 +13,7 @@ from transformers import (
     DataCollatorForSeq2Seq,
     T5ForConditionalGeneration,
 )
-from rougefonc import RougeTest_rouge
+from rouge import Rouge
 from dataset import prompt_dataset, get_dataloader
 
 
@@ -26,8 +26,9 @@ class PromptTransformer:
         task: Optional[str] = None,
         optimizer: Optional[torch.optim.Optimizer] = None,
         lr: Optional[float] = 5e-5,
-        batch_size: Optional[int] = 32,
-        max_length: Optional[int] = 10000,
+        batch_size: Optional[int] = 1,
+        max_length: Optional[int] = 1024,
+        max_new_tokens: Optional[int] = 4000,
         ignore_pad_token_for_loss: Optional[bool] = True,
         num_epochs: Optional[int] = 1,
         device: Optional[str] = 'cuda:0',
@@ -35,11 +36,13 @@ class PromptTransformer:
         if model_name is None:
             model_name = 't5-base'
             
-        self.config = AutoConfig.from_pretrained(model_name)
+        # self.config = AutoConfig.from_pretrained(model_name)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name, config=self.config)
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
         self.num_epochs = num_epochs
         self.device = device
+        self.max_length = max_length
+        self.max_new_tokens = max_new_tokens
         
         if llm_model_name is not None:
             llm_model_name = 'meta-llama/Llama-2-7b-hf'
@@ -47,6 +50,7 @@ class PromptTransformer:
         if llm_token is not None:
             llm_token = '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'
         self.llm_tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b-hf', token=llm_token)
+        self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
         self.llm_model = AutoModelForCausalLM.from_pretrained('meta-llama/Llama-2-7b-hf', token=llm_token)
         
         if task is None:
@@ -102,7 +106,10 @@ class PromptTransformer:
     ) -> Tuple[float, float]:
         
         # Quality reward: average of F-meansure of ROUGE-1, ROUGE-2, and ROUGE-L
-        rouge_score = RougeTest_rouge(answer, response, rouge_metric='avg_f')
+        rouge = Rouge()
+        scores: dict = rouge.get_scores([response], [answer])
+        rouge_score = (scores[0]['rouge-1']['f'] + scores[0]['rouge-2']['f'] + scores[0]['rouge-l']['f']) / 3
+        # rouge_score = RougeTest_rouge(answer, response, rouge_metric='avg_f')
         
         # Length reward
         length_reward = len(answer) / len(response)
@@ -126,17 +133,21 @@ class PromptTransformer:
             padding=True, 
             truncation=True,
         )
+        transformed_inputs = self.prepare_inputs(transformed_inputs)
 
         # Generate outputs and calculate log-probabilities of the actions taken
         outputs = model(
-            input_ids=inputs.input_ids, 
-            attention_mask=inputs.attention_mask, 
-            labels=transformed_inputs.input_ids,
+            input_ids=inputs['input_ids'], 
+            attention_mask=inputs['attention_mask'], 
+            labels=transformed_inputs['input_ids'],
         )
-        log_probs = outputs.loss  # Negative log-likelihood
+        log_prob = outputs.loss  # Negative log-likelihood
 
         # Weight log_probs by rewards and calculate loss
-        weighted_loss = torch.mean([log_probs * (l_r + q_r) for (l_r, q_r) in rewards])
+        weighted_loss = 0
+        for i, (l_r, q_r) in enumerate(rewards):
+            weighted_loss += log_prob * (l_r + q_r)
+        weighted_loss /= len(rewards)
 
         # Perform backpropagation
         weighted_loss.backward()
@@ -154,21 +165,34 @@ class PromptTransformer:
         batch: Dict[str, Union[Any, torch.Tensor]],
         
     ):
+        self.model.train()
+        self.llm_model.eval()
+        
         # Generate new responses
-        outputs = self.model.generate(**batch) # (batch_size, max_length)
+        print(f"{self.model.__class__.__name__} transforming prompt ...")
+        with torch.no_grad():
+            outputs = self.model.generate(**batch, max_length=self.max_length) # (batch_size, max_length)
         new_prompts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True) # (batch_size)
         answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True) # (batch_size)
         
-        llm_inputs = self.llm_tokenizer(new_prompts, return_tensors='pt').to(batch.device)
-        llm_outputs = self.llm_model.generate(**llm_inputs)
+        print(f"{self.llm_model.__class__.__name__} generating response ...")
+        llm_inputs = self.llm_tokenizer(
+            new_prompts, 
+            return_tensors='pt',
+            padding=True,
+        ).to(self.device)
+        with torch.no_grad():
+            llm_outputs = self.llm_model.generate(**llm_inputs, max_new_tokens=self.max_new_tokens)
         new_responses = self.llm_tokenizer.batch_decode(llm_outputs, skip_special_tokens=True)
 
+        print("Calculate rewards ...")
         # Calculate rewards
         rewards = [self.calculate_rewards(ans, resp) for ans, resp in zip(answers, new_responses)]
         # length_rewards, quality_rewards = zip(*rewards)
 
         # TODO: Implement policy update logic based on rewards
         # This involves backpropagation and optimizer steps
+        print("Policy update ...")
         weighted_loss = self.policy_update(
             self.tokenizer,
             self.model,
@@ -184,9 +208,6 @@ class PromptTransformer:
         self.model.to(self.device)
         self.llm_model.to(self.device)
         
-        self.model.train()
-        self.llm_model.eval()
-        
         for epoch in range(self.num_epochs):
             pbar = tqdm(self.train_dataloader, total=len(self.train_dataloader))
             for batch in pbar:
@@ -200,27 +221,29 @@ class PromptTransformer:
     
     @torch.no_grad()
     def eval_step(self, batch: Dict[str, Union[Any, torch.Tensor]], metrics: Dict[str, Any]):
+        self.model.eval()
         # Generate new responses
-        outputs = self.model.generate(**batch) # (batch_size, max_length)
+        outputs = self.model.generate(**batch, max_length=self.max_length) # (batch_size, max_length)
         new_prompts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
         answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True)
         
         llm_inputs = self.llm_tokenizer(new_prompts, return_tensors='pt').to(batch.device)
-        llm_outputs = self.llm_model.generate(**llm_inputs)
+        llm_outputs = self.llm_model.generate(**llm_inputs, max_new_tokens=self.max_new_tokens)
         new_responses = self.llm_tokenizer.batch_decode(llm_outputs, skip_special_tokens=True)
 
         # Calculate rouge scores and length
+        rouge = Rouge()
         for answer, output, response in zip(answers, llm_outputs, new_responses):
-            rouge_scores = RougeTest_rouge(answer, response, rouge_metric='all')
-            for idx, metric in zip([2, 5, 8], ['rouge-1', 'rouge-2', 'rouge-l']):
-                metrics[metric].append(rouge_scores[idx])
+            # rouge_scores = RougeTest_rouge(answer, response, rouge_metric='all')
+            scores: dict = rouge.get_scores([response], [answer])
+            for metric in ['rouge-1', 'rouge-2', 'rouge-l']:
+                metrics[metric].append(scores[0][metric]['f'])
                 
             metrics['length'].append(output.shape[0])
             
             
-    def evaluate(self, model: T5ForConditionalGeneration, dataloader: torch.utils.data.DataLoader):
-        model.to(self.device)
-        model.eval()
+    def evaluate(self):
+        self.model.to(self.device)
         
         metrics = {
             'rouge-1': [],
@@ -229,10 +252,16 @@ class PromptTransformer:
             'length': [],
         }
         
-        for batch in dataloader:
+        for batch in self.test_dataloader:
             batch = self.prepare_inputs(batch)
             self.eval_step(batch, metrics)
             
         return metrics
+    
+    
+    
+if __name__ == '__main__':
+    pt = PromptTransformer()
+    pt.train()
         
     
