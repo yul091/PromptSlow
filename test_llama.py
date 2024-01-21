@@ -1,56 +1,53 @@
 import os
 import re
+import sys
+sys.dont_write_bytecode = True
 from tqdm import tqdm
 import torch
 from datasets import load_dataset
 from transformers import AutoConfig, AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForCausalLM
 from llmlingua import PromptCompressor
+from huggingface_api import generation_pipeline, add_model_args
 
-llm_lingua = PromptCompressor()
+def test_llama(args):
+    # Instantiate tokenizer and model
+    # args.model_path = 'meta-llama/Llama-2-7b-hf'
+    # args.model_path = "/data/yli927/.cache/huggingface/hub/models--meta-llama--Llama-2-7b-hf/snapshots/8cca527612d856d7d32bd94f8103728d614eb852/"
+    # args.token = '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'
+    args.device = 'cuda'
+    args.gpus="0,1"
+    
+    # In-Context Learning (ICL)
+    # !wget https://raw.githubusercontent.com/FranxYao/chain-of-thought-hub/main/gsm8k/lib_prompt/prompt_hardest.txt
+    prompt_complex = open("./prompt_hardest.txt").read()
+    gsm8k = load_dataset("gsm8k", "main")
+    gsm8k_test = gsm8k["test"]
 
-# !wget https://raw.githubusercontent.com/FranxYao/chain-of-thought-hub/main/gsm8k/lib_prompt/prompt_hardest.txt
-prompt_complex = open("./prompt_hardest.txt").read()
-gsm8k = load_dataset("gsm8k", "main")
-gsm8k_test = gsm8k["test"]
+    question = gsm8k['train'][0]['question']
+    answer = gsm8k['train'][0]['answer']
+    print("\nQuestion:", question)
+    instruction = "Please reference the following examples to answer the math question,\n"
+    prompt = instruction + prompt_complex + "\n\nQuestion: " + question
+    
+    args.msg = prompt
+    outputs = generation_pipeline(args)
+    print("\nResponse:", outputs)
+    print("\nAnswer:", answer)
 
-access_token = "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"
-tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b-hf', token=access_token)
-model = AutoModelForCausalLM.from_pretrained('meta-llama/Llama-2-7b-hf', token=access_token)
-# model = torch.ao.quantization.quantize_dynamic(
-#     model,  # the original model
-#     {torch.nn.Linear},  # a set of layers to dynamically quantize
-#     dtype=torch.qint8,
-# ) # the target dtype for quantized weights
-device = 'cuda:0'
-model = model.to(device)
-
-question = gsm8k['train'][0]['question']
-answer = gsm8k['train'][0]['answer']
-print("Question:", question)
-# example = prompt_complex.split("\n\n")[0]
-instruction = "Please reference the following examples to answer the math question,\n"
-prompt = instruction + prompt_complex + "\n\nQuestion: " + question
-# print("Prompt:", prompt)
-inputs = tokenizer(prompt, return_tensors='pt').to(device)
-# Greedy decoding with a temperature of 0 to improve stability
-output = model.generate(**inputs)
-print("Response:", tokenizer.decode(output[0], skip_special_tokens=True))
-print("Answer:", answer)
-
-compressed_prompt = llm_lingua.compress_prompt(
-    prompt_complex.split("\n\n"),
-    instruction="",
-    question="",
-    target_token=200,
-    context_budget="*1.5",
-    iterative_size=100,
-)
-prompt = instruction + compressed_prompt["compressed_prompt"] + "\n\nQuestion: " + question
-print("Compressed prompt:", prompt)
-inputs = tokenizer(prompt, return_tensors='pt').to(device)
-# Greedy decoding with a temperature of 0 to improve stability
-output = model.generate(**inputs)
-print("New Response:", tokenizer.decode(output[0], skip_special_tokens=True))
+    llm_lingua = PromptCompressor(device_map="cuda")
+    compressed_prompt = llm_lingua.compress_prompt(
+        prompt_complex.split("\n\n"),
+        instruction="",
+        question="",
+        target_token=200,
+        context_budget="*1.5",
+        iterative_size=100,
+    )
+    prompt = instruction + compressed_prompt["compressed_prompt"] + "\n\nQuestion: " + question
+    print("Compressed prompt:", prompt)
+    args.msg = prompt
+    outputs = generation_pipeline(args)
+    print("New Response:", outputs)
 
 
 # Evaluate
@@ -138,3 +135,21 @@ def test_answer(pred_str, ans_str):
 #     with open('outputs/test_blenderbot_3B.txt', 'a') as fd:
 #         fd.write("Q: %s\nA_model:\n%s\nA:\n%s\n\n" % (q, ans_.replace("Q:", "").replace("A:", ""), a))
 #     i += 1
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    add_model_args(parser)
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--repetition_penalty", type=float, default=1.0)
+    parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--message", type=str, default="Hello! Who are you?")
+    args = parser.parse_args()
+
+    # Reset default repetition penalty for T5 models.
+    if "t5" in args.model_path and args.repetition_penalty == 1.0:
+        args.repetition_penalty = 1.2
+        
+    test_llama(args)

@@ -19,6 +19,7 @@ from transformers import (
 )
 from rouge import Rouge
 from dataset import prompt_dataset, get_dataloader
+from huggingface_api import generation_pipeline
 
 
 class PromptTransformer:
