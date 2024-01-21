@@ -2,10 +2,8 @@ import os
 import re
 import sys
 sys.dont_write_bytecode = True
-from tqdm import tqdm
 import torch
-from datasets import load_dataset
-from transformers import AutoConfig, AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForCausalLM
+from Dataset import prompt_dataset
 from llmlingua import PromptCompressor
 from huggingface_api import generation_pipeline, add_model_args
 
@@ -19,35 +17,24 @@ def test_llama(args):
     
     # In-Context Learning (ICL)
     # !wget https://raw.githubusercontent.com/FranxYao/chain-of-thought-hub/main/gsm8k/lib_prompt/prompt_hardest.txt
-    prompt_complex = open("./prompt_hardest.txt").read()
-    gsm8k = load_dataset("gsm8k", "main")
-    gsm8k_test = gsm8k["test"]
-
-    question = gsm8k['train'][0]['question']
-    answer = gsm8k['train'][0]['answer']
-    print("\nQuestion:", question)
-    instruction = "Please reference the following examples to answer the math question,\n"
-    prompt = instruction + prompt_complex + "\n\nQuestion: " + question
-    
-    args.msg = prompt
+    instruction, demonstrations, prefix, train_dataset, test_dataset = prompt_dataset("ICL")
+    question, answer = test_dataset['query'][0], test_dataset['reference'][0]
+    prompt = instruction + demonstrations + prefix + question
+    print("\nPrompt:", prompt)
+    args.message = prompt
     outputs = generation_pipeline(args)
     print("\nResponse:", outputs)
     print("\nAnswer:", answer)
-
-    llm_lingua = PromptCompressor(device_map="cuda")
-    compressed_prompt = llm_lingua.compress_prompt(
-        prompt_complex.split("\n\n"),
-        instruction="",
-        question="",
-        target_token=200,
-        context_budget="*1.5",
-        iterative_size=100,
-    )
-    prompt = instruction + compressed_prompt["compressed_prompt"] + "\n\nQuestion: " + question
-    print("Compressed prompt:", prompt)
-    args.msg = prompt
+    
+    # Summarization
+    instruction, demonstrations, prefix, train_dataset, test_dataset = prompt_dataset("summarization")
+    question, answer = test_dataset['query'][0], test_dataset['reference'][0]
+    prompt = instruction + demonstrations + prefix + question
+    print("\nPrompt:", prompt)
+    args.message = prompt
     outputs = generation_pipeline(args)
-    print("New Response:", outputs)
+    print("\nResponse:", outputs)
+    print("\nAnswer:", answer)
 
 
 # Evaluate

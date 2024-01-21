@@ -9,7 +9,7 @@ def prompt_dataset(task: str):
     if task == 'summarization':
         instruction = ""
         demonstrations = ""
-        prefix = "\n\nSummarize: "
+        prefix = "\n\nSummarize the following article:\n"
         train_dataset, test_dataset = create_billsum_dataset()
         
     elif task == "ICL":
