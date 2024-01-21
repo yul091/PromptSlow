@@ -25,6 +25,7 @@ def generation_pipeline(args):
         revision=args.revision,
         debug=args.debug,
     )
+    model = model.bfloat16()
 
     # Build the prompt with a conversation template
     msg = args.message

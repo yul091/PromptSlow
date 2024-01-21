@@ -42,6 +42,7 @@ class PromptTransformer:
         self.max_new_tokens = args.max_new_tokens
         self.saving_step = args.saving_step
         self.output_dir = args.output_dir
+        self.n_train_samples = args.n_train_samples
         self.n_test_samples = args.n_test_samples
         self.ignore_pad_token_for_loss = args.ignore_pad_token_for_loss
             
@@ -56,8 +57,13 @@ class PromptTransformer:
             self.optimizer = AdamW(self.model.parameters(), lr=self.lr)    
             
         self.instruction, self.demonstrations, self.prefix, self.train_dataset, self.test_dataset = prompt_dataset(task=self.task)
+        if self.n_train_samples > 0:
+            n_train_samples = min(self.n_train_samples, len(self.train_dataset))
+            self.train_dataset = self.train_dataset.select(range(n_train_samples))
+            
         if self.n_test_samples > 0:
-            self.test_dataset = self.test_dataset.select(range(self.n_test_samples))
+            n_test_samples = min(self.n_test_samples, len(self.test_dataset))
+            self.test_dataset = self.test_dataset.select(range(n_test_samples))
             
         # Data collator
         label_pad_token_id = -100 if self.ignore_pad_token_for_loss else self.tokenizer.pad_token_id
@@ -103,10 +109,10 @@ class PromptTransformer:
         
         # Quality reward: average of F-meansure of ROUGE-1, ROUGE-2, and ROUGE-L
         rouge = Rouge()
-        if not response:
-            scores = {'rouge-1': {'f': 0.0}, 'rouge-2': {'f': 0.0}, 'rouge-l': {'f': 0.0}}
+        if not response or not answer:
+            scores = [{'rouge-1': {'f': 0.0}, 'rouge-2': {'f': 0.0}, 'rouge-l': {'f': 0.0}}]
         else:
-            scores: dict = rouge.get_scores([response], [answer])
+            scores = rouge.get_scores([response], [answer])
         rouge_score = (scores[0]['rouge-1']['f'] + scores[0]['rouge-2']['f'] + scores[0]['rouge-l']['f']) / 3
         
         # Length reward
@@ -224,8 +230,9 @@ class PromptTransformer:
             metrics = self.evaluate(self.test_dataloader)
             print(f'[epoch {epoch}]: \n{metrics}')
             # Save metrics
-            with open(f'{self.output_dir}/metrics-{epoch}.txt', 'a') as f:
+            with open(f'{self.output_dir}/metrics_{self.task}_step{global_step}.txt', 'a') as f:
                 f.write(f'[epoch {epoch}]: \n{metrics}\n')
+            
             
     
     @torch.no_grad()
@@ -299,7 +306,7 @@ class PromptTransformer:
         if use_transformation:
             for batch in tqdm(dataloader):
                 batch = self.prepare_inputs(batch)
-                self.eval_step(batch, metrics, use_transformation)
+                self.eval_step(batch, metrics)
             if self.task == 'ICL':  
                 questions, ans_pred, ans_gold, num_q, acc = parse_pred_ans(self.save_file)
                 metrics['EM'] = [float(acc / num_q)]
@@ -330,10 +337,10 @@ class PromptTransformer:
                 
                     # print("response: ", response)
                     rouge = Rouge()
-                    if not response:
-                        scores = {'rouge-1': {'f': 0.0}, 'rouge-2': {'f': 0.0}, 'rouge-l': {'f': 0.0}}
+                    if not response or not a:
+                        scores = [{'rouge-1': {'f': 0.0}, 'rouge-2': {'f': 0.0}, 'rouge-l': {'f': 0.0}}]
                     else:
-                        scores: dict = rouge.get_scores([response], [instance['reference']])
+                        scores = rouge.get_scores([response], [a])
                     for metric in ['rouge-1', 'rouge-2', 'rouge-l']:
                         metrics[metric].append(scores[0][metric]['f'])
                         
@@ -369,6 +376,7 @@ if __name__ == '__main__':
     parser.add_argument("--ignore_pad_token_for_loss", type=bool, default=True)
     # Data arguments
     parser.add_argument("--task", type=str, default="conversational")
+    parser.add_argument("--n_train_samples", type=int, default=-1)
     parser.add_argument("--n_test_samples", type=int, default=-1)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--max_new_tokens", type=int, default=1024)
@@ -383,7 +391,7 @@ if __name__ == '__main__':
     metrics = pt.evaluate(pt.test_dataloader, use_transformation=False)
     print("Metrics without transformation: {}".format(metrics))
     # Save metrics
-    with open(f'{pt.output_dir}/metrics(llm).txt', 'a') as f:
+    with open(f'{pt.output_dir}/metrics(llm)-{args.task}.txt', 'a') as f:
         f.write(f'[before transformation]: \n{metrics}\n')
     pt.train()
         

@@ -87,6 +87,8 @@ def create_sharegpt_dataset():
         load_from_cache_file=True,
         desc="Running tokenizer on llm dataset",
     )
+    # Get rid of empty queries and references
+    sharegpt = sharegpt.filter(lambda x: len(x['query']) > 0 and len(x['reference']) > 0)
     try:
         sharegpt = sharegpt.train_test_split(test_size=0.2)
         sharegpt_train = sharegpt["train"] # (72532) text, summary
