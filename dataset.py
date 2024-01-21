@@ -54,13 +54,18 @@ def create_gsm8k_dataset():
 
 def create_sharegpt_dataset():
     sharegpt = load_dataset("liyucheng/ShareGPT90K") # 90665
-    sharegpt = sharegpt.train_test_split(test_size=0.2)
-    print(sharegpt)
     # Standardize the keys (text -> query, summary -> reference)
     sharegpt = sharegpt.rename_column("text", "query")
     sharegpt = sharegpt.rename_column("summary", "reference")
-    sharegpt_train = sharegpt["train"] # (72532) text, summary
-    sharegpt_test = sharegpt["test"] # (18133) text, summary
+    try:
+        sharegpt = sharegpt.train_test_split(test_size=0.2)
+        sharegpt_train = sharegpt["train"] # (72532) text, summary
+        sharegpt_test = sharegpt["test"] # (18133) text, summary
+    except:
+        train_size = 0.8
+        sharegpt_train = sharegpt['train'].select(range(int(train_size * len(sharegpt['train']))))
+        sharegpt_test = sharegpt['train'].select(range(int(train_size * len(sharegpt['train'])), len(sharegpt['train'])))
+    print(sharegpt)
     return sharegpt_train, sharegpt_test
 
 
@@ -75,15 +80,16 @@ def get_dataloader(
     padding: Optional[str] = None,
     ignore_pad_token_for_loss: Optional[bool] = None,
     collate_fn: Optional[Callable] = None,
-):
+) -> DataLoader:
     column_names = dataset.column_names
     
     def preprocess_function(examples):
         # Tokenize the texts
         inputs = [instruction + demonstrations + prefix + query for query in examples["query"]]
         targets = [reference for reference in examples["reference"]]
-        model_inputs = tokenizer(inputs, max_length=max_length, padding=padding, truncation=True)
-        labels = tokenizer(targets, max_length=max_length, padding=padding, truncation=True)
+        model_inputs = tokenizer(inputs, padding=padding, truncation=True)
+        labels = tokenizer(targets, padding=padding, truncation=True)
+        # print("Input sequence lengths: ", [len(input_ids) for input_ids in model_inputs["input_ids"]])
 
         # If we are padding here, replace all tokenizer.pad_token_id in the labels by -100 when we want to ignore
         # padding in the loss.
