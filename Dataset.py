@@ -1,4 +1,5 @@
-
+import sys 
+sys.dont_write_bytecode = True
 from typing import List, Optional, Callable
 from torch.utils.data import DataLoader
 from datasets import load_dataset, Dataset
@@ -21,7 +22,7 @@ def prompt_dataset(task: str):
     elif task == "conversational":
         instruction = ""
         demonstrations = ""
-        prefix = "\n\nConversation: "
+        prefix = ""
         train_dataset, test_dataset = create_sharegpt_dataset()
     else:
         raise ValueError(task)
@@ -53,10 +54,34 @@ def create_gsm8k_dataset():
 
 
 def create_sharegpt_dataset():
+    
+    def process_conversation(examples):
+        queries = []
+        references = []
+        # Ensure there are at least two turns in the conversation
+        for conversation in  examples['conversations']:
+            if len(conversation['value']) >= 2:
+                queries.append(conversation['value'][0])  # First turn for query
+                references.append(conversation['value'][1])  # Second turn for reference
+            else:
+                # Handle conversations with less than 2 turns (if any)
+                queries.append("")
+                references.append("")
+
+        examples['query'] = queries
+        examples['reference'] = references
+        return examples
+    
     sharegpt = load_dataset("liyucheng/ShareGPT90K") # 90665
     # Standardize the keys (text -> query, summary -> reference)
-    sharegpt = sharegpt.rename_column("text", "query")
-    sharegpt = sharegpt.rename_column("summary", "reference")
+    column_names = sharegpt['train'].column_names
+    sharegpt = sharegpt.map(
+        process_conversation,
+        batched=True,
+        remove_columns=column_names,
+        load_from_cache_file=True,
+        desc="Running tokenizer on llm dataset",
+    )
     try:
         sharegpt = sharegpt.train_test_split(test_size=0.2)
         sharegpt_train = sharegpt["train"] # (72532) text, summary
@@ -122,5 +147,7 @@ def get_dataloader(
 
 
 if __name__ == "__main__":
-    instruction, demonstrations, prefix, train_dataset, test_dataset = prompt_dataset(task="summarization")
+    task = "conversational" # "summarization", "ICL", "conversational"
+    instruction, demonstrations, prefix, train_dataset, test_dataset = prompt_dataset(task=task)
     print(train_dataset)
+    print('instance[0]: ', train_dataset[0])

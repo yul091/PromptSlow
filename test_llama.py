@@ -35,6 +35,16 @@ def test_llama(args):
     outputs = generation_pipeline(args)
     print("\nResponse:", outputs)
     print("\nAnswer:", answer)
+    
+    # Conversational
+    instruction, demonstrations, prefix, train_dataset, test_dataset = prompt_dataset("conversational")
+    question, answer = test_dataset['query'][0], test_dataset['reference'][0]
+    prompt = instruction + demonstrations + prefix + question
+    print("\nPrompt:", prompt)
+    args.message = prompt
+    outputs = generation_pipeline(args)
+    print("\nResponse:", outputs)
+    print("\nAnswer:", answer)
 
 
 # Evaluate
