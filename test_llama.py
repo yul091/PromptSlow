@@ -13,7 +13,7 @@ def test_llama(args):
     # args.model_path = "/data/yli927/.cache/huggingface/hub/models--meta-llama--Llama-2-7b-hf/snapshots/8cca527612d856d7d32bd94f8103728d614eb852/"
     # args.token = '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'
     args.device = 'cuda'
-    args.gpus="0,1"
+    args.gpus="0"
     
     # In-Context Learning (ICL)
     # !wget https://raw.githubusercontent.com/FranxYao/chain-of-thought-hub/main/gsm8k/lib_prompt/prompt_hardest.txt
@@ -104,7 +104,7 @@ def parse_pred_ans(filename):
     if test_answer(am, a):
         acc += 1
     print("num_q %d correct %d ratio %.4f" % (num_q, acc, float(acc / num_q)))
-    return questions, ans_pred, ans_gold
+    return questions, ans_pred, ans_gold, num_q, acc
 
 
 def get_result(text: str):

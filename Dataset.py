@@ -1,5 +1,6 @@
 import sys 
 sys.dont_write_bytecode = True
+# import numpy as np
 from typing import List, Optional, Callable
 from torch.utils.data import DataLoader
 from datasets import load_dataset, Dataset
@@ -73,6 +74,10 @@ def create_sharegpt_dataset():
         return examples
     
     sharegpt = load_dataset("liyucheng/ShareGPT90K") # 90665
+    # random sample 1000 examples
+    # idx = np.random.choice(len(sharegpt['train']), 5000, replace=False)
+    sharegpt['train'] = sharegpt['train'].select(range(1000))
+    # sharegpt = load_dataset("liyucheng/sharegpt-500") # 500
     # Standardize the keys (text -> query, summary -> reference)
     column_names = sharegpt['train'].column_names
     sharegpt = sharegpt.map(

@@ -1,0 +1,268 @@
+Q: Google Apps Scriptを使用してグーグルドキュメントでGPT-4を使えるようにします。
+
+以下のコードのエラーが出ました。
+
+正常に動作するために、修正するべき箇所を教えてください。
+
+
+//本コードをサイトに転載したり、改変して配布することを禁止します。
+//本コードが原因で起こったトラブル等は一切責任を持ちません。
+//必要に応じて使用前にコードの動作確認を行った上、自己責任でお使いください。
+//解説ページ：https://merilinc.notion.site/9356ec5fc73f46188a77b759e8d6710b
+const OPENAI_API_KEY = "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";
+const OPENAI_MODEL = "gpt-4";
+const IMAGE_SIZE = '512x512'; // 画像サイズ：512x512、1024x1024
+const MAX_INPUT_LENGTH = 2048; // 入力文字数の上限
+
+// メニューを作成する
+function onOpen() {
+  DocumentApp.getUi().createMenu("記事作成ChatGPT")
+    .addItem("1.KWからタイトル案を考える", "generateTitles")
+    .addItem("2.KWから記事構成案を考える", "generateIdeas")
+    .addItem("3.構成から下書きを作成する", "blogwriting")
+    .addItem("4.選択部分の詳細を書く", "detailwriting")
+    .addItem("5.選択部分の具体例を書く", "example")
+    .addItem("6.選択部分を簡潔に書く", "simplewriting")
+    .addItem("7.選択部分の誤字脱字を修正する", "correctSentence")
+    .addItem("8.選択部分を別の文章に書き直す", "rewrite")
+    .addItem("9.選択部分を親しみやすい文章に書き直す", "friendly")
+    .addItem("10.画像を生成する(英語推奨)", "generateImage")
+    .addToUi();
+}
+
+function generateText(prompt) {
+  const requestBody = {
+    "model": OPENAI_MODEL,
+    "messages": [{"role": "user", "content": prompt}],
+    "temperature": 0,
+    "max_tokens": MAX_INPUT_LENGTH,
+  };
+  const requestOptions = {
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer "+OPENAI_API_KEY
+    },
+    "payload": JSON.stringify(requestBody),
+    "muteHttpExceptions" : true,
+  }
+  try {
+    const response = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", requestOptions);
+    const responseText = response.getContentText();
+    const json = JSON.parse(responseText);
+    const generatedText = json.choices[0].message.content;
+    return generatedText.toString();
+  } catch(e) {
+    throw new Error(`テキスト生成に失敗しました。`+e);
+  }
+}
+
+function getSelectedText(colorChange=false) {
+  const selection = DocumentApp.getActiveDocument().getSelection();
+  let selectedText = '';
+  if (!selection) {
+    throw new Error('テキストが選択されていません。');
+  }
+  const elements = selection.getRangeElements();
+  for (let i = 0; i &lt; elements.length; i++) {
+    const element = elements[i].getElement();
+    if (element.editAsText) {
+      const text = element.asText().getText();
+      const startIndex = elements[i].getStartOffset();
+      const endIndex = elements[i].getEndOffsetInclusive();
+      selectedText += text.substring(startIndex, endIndex + 1);
+      if (colorChange) {
+        element.asText().setForegroundColor(startIndex, endIndex, '#D80000');
+      }
+    }
+  }
+  if (selectedText.length &gt; MAX_INPUT_LENGTH) {
+    throw new Error('選択したテキストが'+MAX_INPUT_LENGTH+'文字を超えています。');
+  }
+  return selectedText;
+}
+
+//選択テキスト直後にテキスト挿入
+function insertTextAfterSelection(insertText) {
+  const selection = DocumentApp.getActiveDocument().getSelection();
+  
+  if (selection) {
+    const elements = selection.getRangeElements();
+    for (let i = 0; i &lt; elements.length; i++) {
+      const element = elements[i].getElement();
+      const text = element.asText();
+      const startIndex = elements[i].getStartOffset();    
+      const endIndex = elements[i].getEndOffsetInclusive(); 
+      element.asText().setForegroundColor(startIndex, endIndex, '#0711bf');
+      text.insertText(endIndex+1, "\n\n" + insertText.replace(/^[\n\r]+|[\n\r]+$/g, ''));
+    }
+  }
+}
+function insertImageAfterSelection(image) {
+  const selection = DocumentApp.getActiveDocument().getSelection();
+  if (!selection) return;
+
+  const elements = selection.getRangeElements();
+  const parent = elements[elements.length - 1].getElement().getParent();
+  const index = parent.getChildIndex(elements[elements.length - 1].getElement());
+  parent.insertInlineImage(index + 1, image);
+
+  return;
+}
+function inputPrompt() {
+  var response = DocumentApp.getUi().prompt(
+    'キーワード設定',
+    'キーワードを入力してください',
+    DocumentApp.getUi().ButtonSet.OK_CANCEL
+  );
+  if (response.getSelectedButton() == DocumentApp.getUi().Button.OK) {
+    if( !response.getResponseText() ){
+      throw new Error('キーワードが入力されていません。');
+    }
+    return response.getResponseText();
+  } else {
+    return false;
+  }
+}
+
+// 1.選択したテキストをもとにタイトル案を考える
+function generateTitles() {
+  const inputKeyword = inputPrompt();
+  if( inputKeyword ){
+    const prompt = "キーワード「" + inputKeyword + "」でGoogle検索したユーザーのクリック率が高くなる記事タイトル案を10個考えて。タイトルには具体的な数字、記事を読むメリットなどを含めること。";
+    DocumentApp.getActiveDocument().getBody().appendParagraph("キーワード："+inputKeyword+""+generateText(prompt)+"\n\n");
+  }
+}
+// 2.選択したテキストをもとに記事構成案を考える
+function generateIdeas() {
+  const inputKeyword = inputPrompt();
+  if( inputKeyword ){
+    const prompt = "キーワード「" + inputKeyword + "」でGoogle検索したユーザーが知りたいことを深掘りして、再検索キーワードの検索意図も含めて、ユーザーの全ての検索意図を満たす専門的な記事構成を考えて。H2見出し、H3見出しをそれぞれ分けて考えること。再検索キーワードは回答に書かないでください。";
+    DocumentApp.getActiveDocument().getBody().appendParagraph("キーワード："+inputKeyword+"\n"+generateText(prompt)+"\n\n");
+  }
+}
+// 3.選択したテキストをもとにブログ記事を書く
+function blogwriting() {
+  const prompt = getSelectedText() + "\n\n上記の構成をもとに本文を書いて。H2見出しは##、H3見出しは###を文頭につけること";
+  DocumentApp.getActiveDocument().getBody().appendParagraph(generateText(prompt));
+}
+// 4.選択したテキストをもとに詳細を書く
+function detailwriting() {
+  const prompt = getSelectedText() + "\n\nこの文章をもとに、さらに詳しく専門的な文章を書いて。必要があればH4見出しを追加してもOK。H4見出しは####を文頭につけること。「そして」「また」のような順接や並列の接続詞はなるべく使わないこと。文章の前後の改行を含めないこと。";
+  insertTextAfterSelection(generateText(prompt));
+  getSelectedText(true);
+}
+// 5.選択したテキストをもとに具体例を書く
+function example() {
+  const prompt = getSelectedText() + "\n\nこの文章をもとに、さらに具体例を挙げてください";
+  insertTextAfterSelection(generateText(prompt));
+  getSelectedText(true);
+}
+// 6.選択したテキストを簡潔に書く
+function simplewriting() {
+  const prompt = getSelectedText() + "\n\nこの文章を短く簡潔にまとめ直して。";
+  insertTextAfterSelection(generateText(prompt));
+  getSelectedText(true);
+}
+// 7.選択したテキストを修正して
+function correctSentence() {
+  const prompt = getSelectedText() + "\n\nこの文章の誤字脱字やおかしなところを修正して。";
+  insertTextAfterSelection(generateText(prompt));
+  getSelectedText(true);
+}
+// 8.選択したテキストを書き直して。
+function rewrite() {
+  const prompt = getSelectedText() + "\n\nこの文章を別の文章に書き直して。";
+  insertTextAfterSelection(generateText(prompt));
+  getSelectedText(true);
+}
+// 9.選択したテキストを親しみやすい文章に書き直して。
+function friendly() {
+  const prompt = getSelectedText() + "\n\nこの文章をフランクな口調に変更してください。";
+  insertTextAfterSelection(generateText(prompt));
+  getSelectedText(true);
+}
+// 10.選択したテキストをもとに画像を生成する
+function generateImage() {
+  const apiUrl = 'https://api.openai.com/v1/images/generations';
+  const prompt = "「"+getSelectedText()+"」を英語に翻訳してから実行して。No text should be placed within the image.";
+  let headers = {
+    'Authorization':'Bearer '+ OPENAI_API_KEY,
+    'Content-type': 'application/json',
+    'X-Slack-No-Retry': 1
+  };
+  let options = {
+  'muteHttpExceptions' : true,
+  'headers': headers,
+  'method': 'POST',
+  'payload': JSON.stringify({
+  'n': 1,
+  'size' : IMAGE_SIZE,
+  'prompt': prompt})
+  };
+  const response = JSON.parse(UrlFetchApp.fetch(apiUrl, options).getContentText());
+  const image = UrlFetchApp.fetch(response.data[0].url).getAs('image/png');
+  insertImageAfterSelection(image);
+}
+A_model:
+エラーが発生した場合、次の手順を試してみてください。
+
+1. Google Apps Scriptのコードを確認し、必要なライブラリがインポートされていることを確認します。
+2. `OPENAI_API_KEY` と `OPENAI_MODEL` の値が正しいか確認します。これらの値は、OpenAIのAPIキーとモデル名に置き換えられているはずです。
+3. `IMAGE_SIZE` と `MAX_INPUT_LENGTH` の値が適切であることを確認します。これらの値は、画像のサイズと入力文字数の上限に置き換えられているはずです。
+4. コードの他の部分が正しく動作していることを確認します。特に、`getSelectedText()` 関数の呼び出しや、`insertTextAfterSelection()` 関数の呼び出しが正しく行われていることを確認してください。
+
+これらの手順を試しても問題が解決しない場合は、詳細なエラーメッセージを表示しているか確認し、それをもとに問題を特定して修正してください。また、Google Apps Scriptのコードを他の人に確認してもらうこともできます。
+A:
+<div><p>コードにはいくつかの問題があるようです。以下の修正を提案します。</p><ol><li><code>temperature</code> が 0 に設定されているため、モデルが常に同じ出力を生成します。これを 0.5 ～ 0.8 の範囲に設定して、生成されるテキストのバリエーションを増やしましょう。</li></ol><p>修正前:</p><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>javascript</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-javascript"><span class="hljs-keyword">const</span> requestBody = {
+  <span class="hljs-string">"model"</span>: <span class="hljs-variable constant_">OPENAI_MODEL</span>,
+  <span class="hljs-string">"messages"</span>: [{<span class="hljs-string">"role"</span>: <span class="hljs-string">"user"</span>, <span class="hljs-string">"content"</span>: prompt}],
+  <span class="hljs-string">"temperature"</span>: <span class="hljs-number">0</span>,
+  <span class="hljs-string">"max_tokens"</span>: <span class="hljs-variable constant_">MAX_INPUT_LENGTH</span>,
+};
+</code></div></div></pre><p>修正後:</p><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>javascript</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-javascript"><span class="hljs-keyword">const</span> requestBody = {
+  <span class="hljs-string">"model"</span>: <span class="hljs-variable constant_">OPENAI_MODEL</span>,
+  <span class="hljs-string">"messages"</span>: [{<span class="hljs-string">"role"</span>: <span class="hljs-string">"user"</span>, <span class="hljs-string">"content"</span>: prompt}],
+  <span class="hljs-string">"temperature"</span>: <span class="hljs-number">0.7</span>,
+  <span class="hljs-string">"max_tokens"</span>: <span class="hljs-variable constant_">MAX_INPUT_LENGTH</span>,
+};
+</code></div></div></pre><ol><li>GPT-4 のエンドポイントが正しくありません。OpenAI API は GPT-4 をサポートしていないため、GPT-3 を使用することをお勧めします。</li></ol><p>修正前:</p><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>javascript</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-javascript"><span class="hljs-keyword">const</span> <span class="hljs-variable constant_">OPENAI_MODEL</span> = <span class="hljs-string">"gpt-4"</span>;
+</code></div></div></pre><p>修正後:</p><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>javascript</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-javascript"><span class="hljs-keyword">const</span> <span class="hljs-variable constant_">OPENAI_MODEL</span> = <span class="hljs-string">"text-davinci-002"</span>;
+</code></div></div></pre><ol><li>画像生成APIに関して、GPTモデルではなく、DALL-Eモデルを使うべきです。しかし、OpenAIは2021年9月時点でDALL-Eを一般公開していません。そのため、画像生成機能は実装できません。代わりに、他の画像生成APIを使用するか、この機能を削除することを検討してください。</li></ol><p>この修正を行った後、再度コードを実行して正常に動作するかどうか確認してください。また、他に問題が見つかった場合は、それに対処してください。</p></div>
+
+Q: Quiero instalar Google Benchmark, Una biblioteca para comparar fragmentos de código, similar a las pruebas unitarias. ¿Estás familiarizado con ella y quieres que te pase la documentación oficial?
+A_model:
+Sí, estoy familiarizado con Google Benchmark. Es una biblioteca de código abierto que se utiliza para comparar fragmentos de código y medir su rendimiento. La documentación oficial se encuentra en el siguiente enlace: <https://github.com/google/benchmark>
+
+La biblioteca de Google Benchmark se utiliza comúnmente para realizar pruebas de rendimiento y optimización de código. Permite medir el rendimiento de diferentes versiones de un mismo código, o de diferentes implementaciones de un mismo problema, y proporciona información detallada sobre el rendimiento de cada versión.
+
+Si necesitas ayuda para instalar o utilizar Google Benchmark, estaré encantado de ayudarte. Por favor, proporciona más detalles sobre lo que necesitas y estaré encantado de ayudarte.
+A:
+<div><p>Sí, estoy familiarizado con Google Benchmark, una biblioteca de C++ diseñada para medir y comparar el rendimiento de fragmentos de código. Aunque la documentación oficial es siempre útil, puedo ofrecerte información básica sobre cómo instalar y usar Google Benchmark.</p><p>Para instalar Google Benchmark, sigue estos pasos:</p><ol><li>Asegúrate de tener instalado Git y CMake en tu sistema. Si no los tienes, instálalos siguiendo las instrucciones de sus respectivas páginas oficiales:</li></ol><ul><li>Git: <a href="https://git-scm.com/book/en/v2/Getting-Started-Installing-Git" target="_new">https://git-scm.com/book/en/v2/Getting-Started-Installing-Git</a></li><li>CMake: <a href="https://cmake.org/install/" target="_new">https://cmake.org/install/</a></li></ul><ol><li>Clona el repositorio de Google Benchmark en tu máquina usando Git:</li></ol><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>bash</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-bash">git <span class="hljs-built_in">clone</span> https://github.com/google/benchmark.git
+</code></div></div></pre><ol><li>Una vez clonado el repositorio, navega al directorio raíz del mismo:</li></ol><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>bash</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-bash"><span class="hljs-built_in">cd</span> benchmark
+</code></div></div></pre><ol><li>Crea un directorio para la compilación y navega a él:</li></ol><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>bash</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-bash"><span class="hljs-built_in">mkdir</span> build
+<span class="hljs-built_in">cd</span> build
+</code></div></div></pre><ol><li>Ejecuta CMake para configurar la compilación:</li></ol><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>sql</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-sql">cmake <span class="hljs-operator">-</span>DCMAKE_BUILD_TYPE<span class="hljs-operator">=</span><span class="hljs-keyword">Release</span> ..
+</code></div></div></pre><ol><li>Compila e instala Google Benchmark:</li></ol><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>go</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-go"><span class="hljs-built_in">make</span>
+sudo <span class="hljs-built_in">make</span> install
+</code></div></div></pre><p>Una vez instalada la biblioteca, puedes usarla en tu proyecto de la siguiente manera:</p><ol><li>Incluye la cabecera de Google Benchmark en tu código:</li></ol><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>cpp</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-cpp"><span class="hljs-meta">#<span class="hljs-keyword">include</span> <span class="hljs-string">&lt;benchmark/benchmark.h&gt;</span></span>
+</code></div></div></pre><ol><li>Define las funciones que quieres medir y registra los benchmarks con la macro <code>BENCHMARK</code>:</li></ol><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>cpp</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-cpp"><span class="hljs-function"><span class="hljs-type">static</span> <span class="hljs-type">void</span> <span class="hljs-title">BM_MiFuncion</span><span class="hljs-params">(benchmark::State&amp; state)</span> </span>{
+  <span class="hljs-keyword">for</span> (<span class="hljs-keyword">auto</span> _ : state) {
+    <span class="hljs-comment">// Código que quieres medir</span>
+  }
+}
+<span class="hljs-built_in">BENCHMARK</span>(BM_MiFuncion);
+</code></div></div></pre><ol><li>Define la función <code>main</code> e invoca <code>benchmark::Initialize</code> y <code>benchmark::RunSpecifiedBenchmarks</code>:</li></ol><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>cpp</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-cpp"><span class="hljs-function"><span class="hljs-type">int</span> <span class="hljs-title">main</span><span class="hljs-params">(<span class="hljs-type">int</span> argc, <span class="hljs-type">char</span>** argv)</span> </span>{
+  benchmark::<span class="hljs-built_in">Initialize</span>(&amp;argc, argv);
+  benchmark::<span class="hljs-built_in">RunSpecifiedBenchmarks</span>();
+}
+</code></div></div></pre><ol><li>Compila tu código enlazándolo con la biblioteca de Google Benchmark y, si lo deseas, con la biblioteca de soporte de hilos (<code>-lpthread</code>):</li></ol><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>c</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-c">g++ -<span class="hljs-built_in">std</span>=c++<span class="hljs-number">11</span> -lbenchmark -lpthread mi_codigo.cpp -o mi_benchmark
+</code></div></div></pre><ol><li>Ejecuta el benchmark:</li></ol><pre><div class="bg-black rounded-md mb-4"><div class="flex items-center relative text-gray-200 bg-gray-800 px-4 py-2 text-xs font-sans"><span>bash</span><svg stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"></svg>Copy code</div><div><code class="!whitespace-pre hljs language-bash">./mi_benchmark
+</code></div></div></pre><p>Puedes encontrar más información y ejemplos en la documentación oficial de Google Benchmark en su repositorio de GitHub: <a href="https://github.com/google/benchmark" target="_new">https://github.com/google/benchmark</a></p></div>
+
+Q: 哈哈可以吗
+A_model:
+对不起，我不明白你说的是什么意思。能否请你再说明一下呢？
+A:
+<div class="markdown prose w-full break-words dark:prose-invert dark"><p>对不起，我不明白你说的是什么意思。能否请你再说明一下呢？</p></div>
+

@@ -3,6 +3,7 @@ import sys
 sys.dont_write_bytecode = True
 sys.setrecursionlimit(2000)  # Increase the limit, 2000 is just an example
 from tqdm import tqdm
+from argparse import Namespace
 from typing import Optional, List, Tuple, Dict, Union, Any
 import torch 
 from torch.optim import AdamW
@@ -19,88 +20,47 @@ from transformers import (
 )
 from rouge import Rouge
 from Dataset import prompt_dataset, get_dataloader
-from huggingface_api import generation_pipeline
+from test_llama import extract_ans, parse_pred_ans
+from huggingface_api import generation_pipeline, add_model_args
 
 
 class PromptTransformer:
     def __init__(
         self, 
-        model_name: Optional[str] = None,
-        llm_model_name: Optional[str] = None,
-        llm_token: Optional[str] = None,
-        task: Optional[str] = None,
+        args: Namespace,
+        model_name: str = 't5-base',
         optimizer: Optional[torch.optim.Optimizer] = None,
-        lr: Optional[float] = 5e-5,
-        batch_size: Optional[int] = 1,
-        max_length: Optional[int] = 1024,
-        max_new_tokens: Optional[int] = 1024,
-        ignore_pad_token_for_loss: Optional[bool] = True,
-        num_epochs: Optional[int] = 1,
         device: Optional[str] = 'cuda:0',
-        output_dir: Optional[str] = 'results',
-        saving_step: Optional[int] = 100,
-        n_test_samples: Optional[int] = -1,
     ):
-        if model_name is None:
-            model_name = 't5-base'
+        self.args = args
+        self.task = args.task
+        self.lr = args.lr
+        self.batch_size = args.batch_size
+        self.num_epochs = args.num_epochs
+        self.device = device
+        self.max_length = args.max_length
+        self.max_new_tokens = args.max_new_tokens
+        self.saving_step = args.saving_step
+        self.output_dir = args.output_dir
+        self.n_test_samples = args.n_test_samples
+        self.ignore_pad_token_for_loss = args.ignore_pad_token_for_loss
             
         self.config = AutoConfig.from_pretrained(model_name)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        self.num_epochs = num_epochs
-        self.device = device
-        self.max_length=max_length,
-        self.max_new_tokens = max_new_tokens
-        self.output_dir = output_dir
-        os.makedirs(output_dir, exist_ok=True)
-        self.saving_step = saving_step
-        
-        if llm_model_name is None:
-            llm_model_name = 'meta-llama/Llama-2-7b-hf'
-            
-        if llm_token is None:
-            llm_token = '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'
-        
-        if task is None:
-            task = "summarization"
-            
-        if task == 'summarization':
-            llm_model_name = "facebook/blenderbot-3B"
-            
-        self.llm_tokenizer = AutoTokenizer.from_pretrained(llm_model_name, token=llm_token)
-        if 'blenderbot' in llm_model_name:
-            # Increase max sequence length
-            llm_config = AutoConfig.from_pretrained(llm_model_name)
-            self.llm_model = AutoModelForSeq2SeqLM.from_pretrained(
-                llm_model_name, 
-                token=llm_token, 
-                config=llm_config,
-            )
-        else:
-            self.llm_model = AutoModelForCausalLM.from_pretrained(llm_model_name, token=llm_token)
-            
-        if 'llama' in llm_model_name:
-            self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
-            
-        self.llm_pipe = pipeline(
-            task=task,
-            model=self.llm_model,
-            tokenizer=self.llm_tokenizer,
-            device=self.device,
-            max_new_tokens=max_new_tokens,
-            truncation=True,
-        )
+
+        os.makedirs(self.output_dir, exist_ok=True)
          
         self.optimizer = optimizer   
         if optimizer is None:
-            self.optimizer = AdamW(self.model.parameters(), lr=lr)    
+            self.optimizer = AdamW(self.model.parameters(), lr=self.lr)    
             
-        self.instruction, self.demonstrations, self.prefix, self.train_dataset, self.test_dataset = prompt_dataset(task=task)
-        if n_test_samples > 0:
-            self.test_dataset = self.test_dataset.select(range(n_test_samples))
+        self.instruction, self.demonstrations, self.prefix, self.train_dataset, self.test_dataset = prompt_dataset(task=self.task)
+        if self.n_test_samples > 0:
+            self.test_dataset = self.test_dataset.select(range(self.n_test_samples))
             
         # Data collator
-        label_pad_token_id = -100 if ignore_pad_token_for_loss else self.tokenizer.pad_token_id
+        label_pad_token_id = -100 if self.ignore_pad_token_for_loss else self.tokenizer.pad_token_id
         data_collator = DataCollatorForSeq2Seq(
             self.tokenizer,
             model=self.model,
@@ -111,29 +71,28 @@ class PromptTransformer:
         self.train_dataloader = get_dataloader(
             self.train_dataset, 
             self.tokenizer, 
-            batch_size=batch_size,
+            batch_size=self.batch_size,
             instruction=self.instruction,
             demonstrations=self.demonstrations,
             prefix=self.prefix,
             max_length="max_length",
             padding=True,
-            ignore_pad_token_for_loss=ignore_pad_token_for_loss,
+            ignore_pad_token_for_loss=self.ignore_pad_token_for_loss,
             collate_fn=data_collator,
         )
         
         self.test_dataloader = get_dataloader(
             self.test_dataset, 
             self.tokenizer, 
-            batch_size=batch_size,
+            batch_size=self.batch_size,
             instruction=self.instruction,
             demonstrations=self.demonstrations,
             prefix=self.prefix,
             max_length="max_length",
             padding=True,
-            ignore_pad_token_for_loss=ignore_pad_token_for_loss,
+            ignore_pad_token_for_loss=self.ignore_pad_token_for_loss,
             collate_fn=data_collator,
         )
-        
         
         
     def calculate_rewards(
@@ -144,12 +103,14 @@ class PromptTransformer:
         
         # Quality reward: average of F-meansure of ROUGE-1, ROUGE-2, and ROUGE-L
         rouge = Rouge()
-        scores: dict = rouge.get_scores([response], [answer])
+        if not response:
+            scores = {'rouge-1': {'f': 0.0}, 'rouge-2': {'f': 0.0}, 'rouge-l': {'f': 0.0}}
+        else:
+            scores: dict = rouge.get_scores([response], [answer])
         rouge_score = (scores[0]['rouge-1']['f'] + scores[0]['rouge-2']['f'] + scores[0]['rouge-l']['f']) / 3
-        # rouge_score = RougeTest_rouge(answer, response, rouge_metric='avg_f')
         
         # Length reward
-        length_reward = len(self.llm_tokenizer.tokenize(answer)) / len(self.llm_tokenizer.tokenize(response))
+        length_reward = len(self.tokenizer.tokenize(answer)) / len(self.tokenizer.tokenize(response))
     
         return length_reward, rouge_score
         
@@ -203,30 +164,27 @@ class PromptTransformer:
         
     ):
         self.model.train()
-        self.llm_model.eval()
+        args = self.args
         
         # Generate new responses
         # print(f"{self.model.__class__.__name__} transforming prompt ...")
         with torch.no_grad():
             outputs = self.model.generate(**batch, max_length=self.max_length) # (batch_size, max_length)
-        new_prompts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True) # (batch_size)
-        answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True) # (batch_size)
+        new_queries = self.tokenizer.batch_decode(outputs, skip_special_tokens=True) # (batch_size)
         
         # print(f"{self.llm_model.__class__.__name__} generating response ...")
-        # llm_inputs = self.llm_tokenizer(
-        #     new_prompts, 
-        #     return_tensors='pt',
-        #     padding=True,
-        # ).to(self.device)
-        # with torch.no_grad():
-        #     llm_outputs = self.llm_model.generate(**llm_inputs, max_new_tokens=self.max_new_tokens)
-        # new_responses = self.llm_tokenizer.batch_decode(llm_outputs, skip_special_tokens=True)
-        new_responses = self.llm_pipe(new_prompts)
-        new_responses = [x['summary_text'] for x in new_responses]
-
+        new_prompts = [self.instruction + self.demonstrations + self.prefix + q for q in new_queries]
+        responses = []
+        for new_prompt in new_prompts:
+            # print("new_prompt: ", new_prompt)
+            args.message = new_prompt
+            response = generation_pipeline(args)
+            responses.append(response)
+            
         # print("Calculate rewards ...")
         # Calculate rewards
-        rewards = [self.calculate_rewards(ans, resp) for ans, resp in zip(answers, new_responses)]
+        answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True) # (batch_size)
+        rewards = [self.calculate_rewards(ans, resp) for ans, resp in zip(answers, responses)]
         length_rewards, quality_rewards = zip(*rewards)
         avg_length_reward, avg_quality_reward = sum(length_rewards) / len(length_rewards), sum(quality_rewards) / len(quality_rewards)
 
@@ -246,10 +204,13 @@ class PromptTransformer:
 
     def train(self):
         self.model.to(self.device)
-        # self.llm_model.to(self.device)
         global_step = 0
+        model_n = self.model.__class__.__name__
         
         for epoch in range(self.num_epochs):
+            
+            self.save_file = f"{self.output_dir}/{args.model_path.split('/')[-1]}_{self.task}_{model_n}_epoch-{epoch+1}.txt"
+            
             pbar = tqdm(enumerate(self.train_dataloader), total=len(self.train_dataloader))
             for step, batch in pbar:
                 batch = self.prepare_inputs(batch)
@@ -274,36 +235,50 @@ class PromptTransformer:
         metrics: Dict[str, Any], 
     ):
         self.model.eval()
-        self.llm_model.eval()
+        args = self.args
         
         # Generate new responses
         outputs = self.model.generate(**batch, max_length=self.max_length) # (batch_size, max_length)
-        new_prompts = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)   
-        print("new_prompts: ", new_prompts)
+        new_queries = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)   
+        print("new_prompts: ", new_queries)
+        
+        responses = []
+        for new_query in new_queries:
+            # print("new_prompt: ", new_prompt)
+            new_prompt = self.instruction + self.demonstrations + self.prefix + new_query
+            args.message = new_prompt
+            response = generation_pipeline(args)
+            responses.append(response)
+        print("new_responses: ", responses)
             
         answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True)
-        
-        # llm_inputs = self.llm_tokenizer(
-        #     new_prompts, 
-        #     return_tensors='pt',
-        #     padding=True,
-        # ).to(self.device)
-        # llm_outputs = self.llm_model.generate(**llm_inputs, max_new_tokens=self.max_new_tokens)
-        # new_responses = self.llm_tokenizer.batch_decode(llm_outputs, skip_special_tokens=True)
-        new_responses= self.llm_pipe(new_prompts)
-        print("new_responses: ", new_responses)
 
         # Calculate rouge scores and length
         rouge = Rouge()
-        for answer, response in zip(answers, new_responses):
-            # rouge_scores = RougeTest_rouge(answer, response, rouge_metric='all')
-            # print("response: {}, answer: {}".format(response, answer))
-            response = response['summary_text']
-            scores: dict = rouge.get_scores([response], [answer])
-            for metric in ['rouge-1', 'rouge-2', 'rouge-l']:
-                metrics[metric].append(scores[0][metric]['f'])
+        
+        for query, answer, response in zip(new_queries, answers, responses):
+            output_tokens = self.tokenizer.tokenize(response)
+            
+            if self.task == 'ICL':
+                ans_, residual = extract_ans(response)
+                with open(self.save_file, 'a') as fd:
+                    fd.write("Q: %s\nA_model:\n%s\nA:\n%s\n\n" % (
+                        query, 
+                        ans_.replace("Q:", "").replace("A:", ""), 
+                        answer,
+                    ))
+            
+            else:
+                with open(self.save_file, 'a') as fd:
+                    fd.write("Q: %s\nA_model:\n%s\nA:\n%s\n\n" % (
+                        query, 
+                        response, 
+                        answer,
+                    ))       
+                scores: dict = rouge.get_scores([response], [answer])
+                for metric in ['rouge-1', 'rouge-2', 'rouge-l']:
+                    metrics[metric].append(scores[0][metric]['f'])
                 
-            output_tokens = self.llm_tokenizer.tokenize(response)
             metrics['length'].append(len(output_tokens))
             
             
@@ -313,7 +288,6 @@ class PromptTransformer:
         use_transformation: bool = True,
     ):
         self.model.to(self.device)
-        # self.llm_model.to(self.device)
         
         metrics = {
             'rouge-1': [],
@@ -326,18 +300,49 @@ class PromptTransformer:
             for batch in tqdm(dataloader):
                 batch = self.prepare_inputs(batch)
                 self.eval_step(batch, metrics, use_transformation)
+            if self.task == 'ICL':  
+                questions, ans_pred, ans_gold, num_q, acc = parse_pred_ans(self.save_file)
+                metrics['EM'] = [float(acc / num_q)]
         else:
+            save_file = f"{self.output_dir}/{args.model_path.split('/')[-1]}_{self.task}.txt"
             for instance in tqdm(self.test_dataset, total=len(self.test_dataset)):
-                prompt = instance['query']
-                response = self.llm_pipe(prompt)
-                # print("response: ", response)
-                response = response[0]['summary_text']
-                rouge = Rouge()
-                scores: dict = rouge.get_scores([response], [instance['reference']])
-                for metric in ['rouge-1', 'rouge-2', 'rouge-l']:
-                    metrics[metric].append(scores[0][metric]['f'])
-                output_tokens = self.llm_tokenizer.tokenize(response)
+                q = instance['query']
+                a = instance['reference']
+                prompt = self.instruction + self.demonstrations + self.prefix + q
+                self.args.message = prompt
+                response = generation_pipeline(self.args)
+                
+                if self.task == 'ICL':
+                    ans_, residual = extract_ans(response)
+                    with open(save_file, 'a') as fd:
+                        fd.write("Q: %s\nA_model:\n%s\nA:\n%s\n\n" % (
+                            q, 
+                            ans_.replace("Q:", "").replace("A:", ""), 
+                            a,
+                        ))
+                else:   
+                    with open(save_file, 'a') as fd:
+                        fd.write("Q: %s\nA_model:\n%s\nA:\n%s\n\n" % (
+                            q, 
+                            response, 
+                            a,
+                        ))
+                
+                    # print("response: ", response)
+                    rouge = Rouge()
+                    if not response:
+                        scores = {'rouge-1': {'f': 0.0}, 'rouge-2': {'f': 0.0}, 'rouge-l': {'f': 0.0}}
+                    else:
+                        scores: dict = rouge.get_scores([response], [instance['reference']])
+                    for metric in ['rouge-1', 'rouge-2', 'rouge-l']:
+                        metrics[metric].append(scores[0][metric]['f'])
+                        
+                output_tokens = self.tokenizer.tokenize(response)
                 metrics['length'].append(len(output_tokens))
+                
+            if self.task == 'ICL':  
+                questions, ans_pred, ans_gold, num_q, acc = parse_pred_ans(save_file)
+                metrics['EM'] = [float(acc / num_q)]
             
         # Average
         for metric in metrics:
@@ -346,10 +351,35 @@ class PromptTransformer:
         return metrics
     
     
-    
 if __name__ == '__main__':
-    task = "conversational"
-    pt = PromptTransformer(n_test_samples=10, task=task)
+    import argparse
+    parser = argparse.ArgumentParser()
+    add_model_args(parser)
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--repetition_penalty", type=float, default=1.0)
+    parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--message", type=str, default="Hello! Who are you?")
+    # Training arguments 
+    parser.add_argument("--num_epochs", type=int, default=1)
+    parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--output_dir", type=str, default="results")
+    parser.add_argument("--saving_step", type=int, default=100)
+    parser.add_argument("--ignore_pad_token_for_loss", type=bool, default=True)
+    # Data arguments
+    parser.add_argument("--task", type=str, default="conversational")
+    parser.add_argument("--n_test_samples", type=int, default=-1)
+    parser.add_argument("--max_length", type=int, default=1024)
+    parser.add_argument("--max_new_tokens", type=int, default=1024)
+    args = parser.parse_args()
+
+    # Reset default repetition penalty for T5 models.
+    if "t5" in args.model_path and args.repetition_penalty == 1.0:
+        args.repetition_penalty = 1.2
+
+    # generation_pipeline(args)
+    pt = PromptTransformer(args, device='cuda')
     metrics = pt.evaluate(pt.test_dataloader, use_transformation=False)
     print("Metrics without transformation: {}".format(metrics))
     # Save metrics
