@@ -3,3 +3,5 @@ rouge
 pyrouge
 datasets
 fschat[model_worker,webui]
+evaluate
+bert_score

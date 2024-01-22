@@ -87,8 +87,8 @@ def create_sharegpt_dataset():
         load_from_cache_file=True,
         desc="Running tokenizer on llm dataset",
     )
-    # Get rid of empty queries and references
-    sharegpt = sharegpt.filter(lambda x: len(x['query']) > 0 and len(x['reference']) > 0)
+    # Get rid of empty queries or references
+    sharegpt = sharegpt.filter(lambda x: len(x['query']) > 0 or len(x['reference']) > 0)
     try:
         sharegpt = sharegpt.train_test_split(test_size=0.2)
         sharegpt_train = sharegpt["train"] # (72532) text, summary
@@ -105,10 +105,6 @@ def get_dataloader(
     dataset: Dataset, 
     tokenizer: PreTrainedTokenizer, 
     batch_size: Optional[int] = 32,
-    instruction: Optional[str] = '',
-    demonstrations: Optional[str] = '',
-    prefix: Optional[str] = '',
-    max_length: Optional[int] = None,
     padding: Optional[str] = None,
     ignore_pad_token_for_loss: Optional[bool] = None,
     collate_fn: Optional[Callable] = None,
@@ -117,7 +113,7 @@ def get_dataloader(
     
     def preprocess_function(examples):
         # Tokenize the texts
-        inputs = [instruction + demonstrations + prefix + query for query in examples["query"]]
+        inputs = [query for query in examples["query"]]
         targets = [reference for reference in examples["reference"]]
         model_inputs = tokenizer(inputs, padding=padding, truncation=True)
         labels = tokenizer(targets, padding=padding, truncation=True)

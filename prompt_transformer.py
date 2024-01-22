@@ -2,6 +2,7 @@ import os
 import sys 
 sys.dont_write_bytecode = True
 sys.setrecursionlimit(2000)  # Increase the limit, 2000 is just an example
+import time
 from tqdm import tqdm
 from argparse import Namespace
 from typing import Optional, List, Tuple, Dict, Union, Any
@@ -18,6 +19,7 @@ from transformers import (
     DataCollatorForSeq2Seq,
     T5ForConditionalGeneration,
 )
+# import pdb # debug breakpoint
 from rouge import Rouge
 from Dataset import prompt_dataset, get_dataloader
 from test_llama import extract_ans, parse_pred_ans
@@ -28,7 +30,6 @@ class PromptTransformer:
     def __init__(
         self, 
         args: Namespace,
-        model_name: str = 't5-base',
         optimizer: Optional[torch.optim.Optimizer] = None,
         device: Optional[str] = 'cuda:0',
     ):
@@ -37,6 +38,7 @@ class PromptTransformer:
         self.lr = args.lr
         self.batch_size = args.batch_size
         self.num_epochs = args.num_epochs
+        self.my_model_name = args.my_model_name
         self.device = device
         self.max_length = args.max_length
         self.max_new_tokens = args.max_new_tokens
@@ -44,11 +46,12 @@ class PromptTransformer:
         self.output_dir = args.output_dir
         self.n_train_samples = args.n_train_samples
         self.n_test_samples = args.n_test_samples
+        self.use_greedy_baseline = args.use_greedy_baseline
         self.ignore_pad_token_for_loss = args.ignore_pad_token_for_loss
             
-        self.config = AutoConfig.from_pretrained(model_name)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        self.config = AutoConfig.from_pretrained(self.my_model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.my_model_name)
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(self.my_model_name)
 
         os.makedirs(self.output_dir, exist_ok=True)
          
@@ -78,10 +81,6 @@ class PromptTransformer:
             self.train_dataset, 
             self.tokenizer, 
             batch_size=self.batch_size,
-            instruction=self.instruction,
-            demonstrations=self.demonstrations,
-            prefix=self.prefix,
-            max_length="max_length",
             padding=True,
             ignore_pad_token_for_loss=self.ignore_pad_token_for_loss,
             collate_fn=data_collator,
@@ -91,10 +90,6 @@ class PromptTransformer:
             self.test_dataset, 
             self.tokenizer, 
             batch_size=self.batch_size,
-            instruction=self.instruction,
-            demonstrations=self.demonstrations,
-            prefix=self.prefix,
-            max_length="max_length",
             padding=True,
             ignore_pad_token_for_loss=self.ignore_pad_token_for_loss,
             collate_fn=data_collator,
@@ -120,45 +115,6 @@ class PromptTransformer:
     
         return length_reward, rouge_score
         
-
-    def policy_update(
-        self, 
-        tokenizer: T5Tokenizer,
-        model: T5ForConditionalGeneration, 
-        inputs: Dict[str, Union[Any, torch.Tensor]], 
-        new_prompts: List[str], 
-        rewards: List[Tuple[float, float]], 
-        optimizer: torch.optim.Optimizer,
-    ):
-        # Convert transformed prompts to tensors
-        transformed_inputs = tokenizer(
-            new_prompts, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True,
-        )
-        transformed_inputs = self.prepare_inputs(transformed_inputs)
-
-        # Generate outputs and calculate log-probabilities of the actions taken
-        outputs = model(
-            input_ids=inputs['input_ids'], 
-            attention_mask=inputs['attention_mask'], 
-            labels=transformed_inputs['input_ids'],
-        )
-        log_prob = outputs.loss  # Negative log-likelihood
-
-        # Weight log_probs by rewards and calculate loss
-        weighted_loss = 0
-        for i, (l_r, q_r) in enumerate(rewards):
-            weighted_loss += - log_prob * (l_r + q_r) # force larger rewards to be more important
-        weighted_loss /= len(rewards)
-
-        # Perform backpropagation
-        weighted_loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-        return weighted_loss.item()
-        
         
     def prepare_inputs(self, batch: Dict[str, Union[Any, torch.Tensor]]):
         return {k: v.to(self.device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
@@ -167,45 +123,84 @@ class PromptTransformer:
     def training_step(
         self,
         batch: Dict[str, Union[Any, torch.Tensor]],
-        
     ):
         self.model.train()
         args = self.args
+        answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True) # (B)
+        input_ids = batch['input_ids']
+        attention_mask = batch.get('attention_mask')  # Use .get to handle cases where it might not exist       
         
-        # Generate new responses
-        # print(f"{self.model.__class__.__name__} transforming prompt ...")
+        # Generate new prompts
         with torch.no_grad():
-            outputs = self.model.generate(**batch, max_length=self.max_length) # (batch_size, max_length)
-        new_queries = self.tokenizer.batch_decode(outputs, skip_special_tokens=True) # (batch_size)
-        
-        # print(f"{self.llm_model.__class__.__name__} generating response ...")
-        new_prompts = [self.instruction + self.demonstrations + self.prefix + q for q in new_queries]
-        responses = []
-        for new_prompt in new_prompts:
-            # print("new_prompt: ", new_prompt)
-            args.message = new_prompt
-            response = generation_pipeline(args)
-            responses.append(response)
-            
-        # print("Calculate rewards ...")
-        # Calculate rewards
-        answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True) # (batch_size)
-        rewards = [self.calculate_rewards(ans, resp) for ans, resp in zip(answers, responses)]
-        length_rewards, quality_rewards = zip(*rewards)
-        avg_length_reward, avg_quality_reward = sum(length_rewards) / len(length_rewards), sum(quality_rewards) / len(quality_rewards)
+            sampled_hyps = self.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask, 
+                max_length=self.max_length, 
+                do_sample=True,
+            ) # (B X T)
 
-        # TODO: Implement policy update logic based on rewards
+        sampled_queries = self.tokenizer.batch_decode(sampled_hyps, skip_special_tokens=True) # (B)
+        sampled_prompts = [self.instruction + self.demonstrations + self.prefix + q for q in sampled_queries]
+        sampled_responses = []
+        for sampled_prompt in sampled_prompts:
+            # print("new_prompt: ", sampled_prompt)
+            args.message = sampled_prompt
+            sampled_response = generation_pipeline(args)
+            sampled_responses.append(sampled_response)
+            
+        # Calculate rewards
+        rewards = [self.calculate_rewards(ans, resp) for ans, resp in zip(answers, sampled_responses)]
+        length_rewards, quality_rewards = zip(*rewards)
+        avg_length_reward = sum(length_rewards) / len(length_rewards)
+        avg_quality_reward = sum(quality_rewards) / len(quality_rewards)
+        
+        if self.use_greedy_baseline:
+            with torch.no_grad():
+                greedy_hyps = self.model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask, 
+                    max_length=self.max_length, 
+                    do_sample=False,
+                )
+            
+            greedy_queries = self.tokenizer.batch_decode(greedy_hyps, skip_special_tokens=True) # (B)
+            greedy_prompts = [self.instruction + self.demonstrations + self.prefix + q for q in greedy_queries] 
+            greedy_responses = []
+            for greedy_prompt in greedy_prompts:
+                args.message = greedy_prompt
+                greedy_response = generation_pipeline(args)
+                greedy_responses.append(greedy_response)
+            
+            # Greedy rewards
+            greedy_rewards = [self.calculate_rewards(ans, resp) for ans, resp in zip(answers, greedy_responses)]
+        
+        # Implement policy update logic based on rewards
         # This involves backpropagation and optimizer steps
-        # print("Policy update ...")
-        weighted_loss = self.policy_update(
-            self.tokenizer,
-            self.model,
-            batch,
-            new_prompts,
-            rewards,
-            self.optimizer,
+        # Generate outputs and calculate log-probabilities of the actions taken
+        outputs = self.model(
+            input_ids=input_ids, 
+            attention_mask=attention_mask, 
+            labels=sampled_hyps, # (B X T)
         )
-        return weighted_loss, avg_length_reward, avg_quality_reward
+        log_prob = outputs.loss  # Negative log-likelihood
+
+        # Weight log_probs by rewards and calculate loss
+        weighted_loss = 0
+        if self.use_greedy_baseline:
+            for (l_r, q_r), (base_l_r, base_q_r) in zip(rewards, greedy_rewards):
+                weighted_loss += - log_prob * (l_r + q_r - base_l_r - base_q_r) # force larger rewards to be more important
+        else:
+            for l_r, q_r in rewards:
+                weighted_loss += - log_prob * (l_r + q_r)
+        weighted_loss /= len(rewards)
+
+        # Perform backpropagation
+        weighted_loss.backward()
+        self.optimizer.step()
+        self.optimizer.zero_grad()
+        # pdb.set_trace()
+
+        return weighted_loss.item(), avg_length_reward, avg_quality_reward
     
 
     def train(self):
@@ -230,7 +225,7 @@ class PromptTransformer:
             metrics = self.evaluate(self.test_dataloader)
             print(f'[epoch {epoch}]: \n{metrics}')
             # Save metrics
-            with open(f'{self.output_dir}/metrics_{self.task}_step{global_step}.txt', 'a') as f:
+            with open(f'{self.output_dir}/metrics_{self.task}.txt', 'a') as f:
                 f.write(f'[epoch {epoch}]: \n{metrics}\n')
             
             
@@ -243,11 +238,22 @@ class PromptTransformer:
     ):
         self.model.eval()
         args = self.args
+        input_ids = batch['input_ids']
+        attention_mask = batch.get('attention_mask')  # Use .get to handle cases where it might not exist
+        original_queries = self.tokenizer.batch_decode(input_ids, skip_special_tokens=True)
+        print("original_queries: ", original_queries)
+        answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True)
         
         # Generate new responses
-        outputs = self.model.generate(**batch, max_length=self.max_length) # (batch_size, max_length)
+        outputs = self.model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask, 
+            max_length=self.max_length, 
+            do_sample=False,
+        ) # (B X T)
         new_queries = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)   
-        print("new_prompts: ", new_queries)
+        print("new_queries: ", new_queries)
+        print("answers: ", answers)
         
         responses = []
         for new_query in new_queries:
@@ -257,27 +263,26 @@ class PromptTransformer:
             response = generation_pipeline(args)
             responses.append(response)
         print("new_responses: ", responses)
-            
-        answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True)
 
         # Calculate rouge scores and length
         rouge = Rouge()
         
-        for query, answer, response in zip(new_queries, answers, responses):
+        for original_query, query, answer, response in zip(original_queries, new_queries, answers, responses):
             output_tokens = self.tokenizer.tokenize(response)
             
             if self.task == 'ICL':
                 ans_, residual = extract_ans(response)
                 with open(self.save_file, 'a') as fd:
-                    fd.write("Q: %s\nA_model:\n%s\nA:\n%s\n\n" % (
+                    fd.write("Q:\n%s\nQ':\n%s\nA_model:\n%s\nA:\n%s\n\n" % (
+                        original_query,
                         query, 
                         ans_.replace("Q:", "").replace("A:", ""), 
                         answer,
                     ))
-            
             else:
                 with open(self.save_file, 'a') as fd:
-                    fd.write("Q: %s\nA_model:\n%s\nA:\n%s\n\n" % (
+                    fd.write("Q:\n%s\nQ'\n%s\nA_model:\n%s\nA:\n%s\n\n" % (
+                        original_query,
                         query, 
                         response, 
                         answer,
@@ -287,6 +292,8 @@ class PromptTransformer:
                     metrics[metric].append(scores[0][metric]['f'])
                 
             metrics['length'].append(len(output_tokens))
+        
+        # pdb.set_trace()
             
             
     def evaluate(
@@ -303,6 +310,7 @@ class PromptTransformer:
             'length': [],
         }
         
+        start = time.time()
         if use_transformation:
             for batch in tqdm(dataloader):
                 batch = self.prepare_inputs(batch)
@@ -350,10 +358,14 @@ class PromptTransformer:
             if self.task == 'ICL':  
                 questions, ans_pred, ans_gold, num_q, acc = parse_pred_ans(save_file)
                 metrics['EM'] = [float(acc / num_q)]
+        end = time.time()
             
         # Average
         for metric in metrics:
             metrics[metric] = sum(metrics[metric]) / len(metrics[metric])
+            
+        metrics['overhead'] = end - start
+        metrics['overhead_per_sample'] = metrics['overhead'] / len(self.test_dataset)
             
         return metrics
     
@@ -366,6 +378,7 @@ if __name__ == '__main__':
     parser.add_argument("--repetition_penalty", type=float, default=1.0)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--my_model_name", type=str, default="t5-small")
     parser.add_argument("--message", type=str, default="Hello! Who are you?")
     # Training arguments 
     parser.add_argument("--num_epochs", type=int, default=1)
@@ -374,6 +387,7 @@ if __name__ == '__main__':
     parser.add_argument("--output_dir", type=str, default="results")
     parser.add_argument("--saving_step", type=int, default=100)
     parser.add_argument("--ignore_pad_token_for_loss", type=bool, default=True)
+    parser.add_argument("--use_greedy_baseline", action="store_true")
     # Data arguments
     parser.add_argument("--task", type=str, default="conversational")
     parser.add_argument("--n_train_samples", type=int, default=-1)
@@ -391,7 +405,7 @@ if __name__ == '__main__':
     metrics = pt.evaluate(pt.test_dataloader, use_transformation=False)
     print("Metrics without transformation: {}".format(metrics))
     # Save metrics
-    with open(f'{pt.output_dir}/metrics(llm)-{args.task}.txt', 'a') as f:
+    with open(f'{pt.output_dir}/metrics_{args.task}.txt', 'w') as f:
         f.write(f'[before transformation]: \n{metrics}\n')
     pt.train()
         

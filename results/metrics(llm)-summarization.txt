@@ -1,4 +1,0 @@
-[before transformation]: 
-{'rouge-1': 0.3913143904260091, 'rouge-2': 0.18564211967562283, 'rouge-l': 0.35444019332894705, 'length': 243.7}
-[before transformation]: 
-{'rouge-1': 0.3626175008611015, 'rouge-2': 0.14356449695649764, 'rouge-l': 0.3190061514788974, 'length': 176.9}
