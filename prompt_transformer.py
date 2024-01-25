@@ -21,6 +21,7 @@ from transformers import (
 )
 # import pdb # debug breakpoint
 from rouge import Rouge
+from evaluate import load
 from Dataset import prompt_dataset, get_dataloader
 from test_llama import extract_ans, parse_pred_ans
 from huggingface_api import generation_pipeline, add_model_args
@@ -48,10 +49,14 @@ class PromptTransformer:
         self.n_test_samples = args.n_test_samples
         self.use_greedy_baseline = args.use_greedy_baseline
         self.ignore_pad_token_for_loss = args.ignore_pad_token_for_loss
+        self.chunk_size = args.chunk_size
             
         self.config = AutoConfig.from_pretrained(self.my_model_name)
         self.tokenizer = AutoTokenizer.from_pretrained(self.my_model_name)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(self.my_model_name)
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(
+            self.my_model_name, 
+            config=self.config,
+        ).bfloat16()
 
         os.makedirs(self.output_dir, exist_ok=True)
          
@@ -118,6 +123,34 @@ class PromptTransformer:
         
     def prepare_inputs(self, batch: Dict[str, Union[Any, torch.Tensor]]):
         return {k: v.to(self.device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+    
+    
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        model: T5ForConditionalGeneration,
+        do_sample: Optional[bool] = False,
+    ) -> List[str]:
+        # Split the input sequence into N segments
+        input_ids_list = list(torch.split(input_ids, self.chunk_size, dim=1))
+        attention_mask_list = list(torch.split(attention_mask, self.chunk_size, dim=1))
+        # Random select a segment to be replaced
+        idx = torch.randint(len(input_ids_list), (1,)).item()
+        # Produce new segment of prompts
+        hyps = model.generate(
+            input_ids=input_ids_list[idx],
+            attention_mask=attention_mask_list[idx],
+            max_length=self.max_length, 
+            do_sample=do_sample,
+        )
+        # Replace the selected segment with the new tokens
+        input_ids_list[idx] = hyps
+        # Concatenate the segments back together
+        new_input_ids = torch.cat(input_ids_list, dim=1)
+        new_queries = self.tokenizer.batch_decode(new_input_ids, skip_special_tokens=True)
+        return hyps, new_queries
+        
         
         
     def training_step(
@@ -130,16 +163,15 @@ class PromptTransformer:
         input_ids = batch['input_ids']
         attention_mask = batch.get('attention_mask')  # Use .get to handle cases where it might not exist       
         
-        # Generate new prompts
+        # Get new prompts
         with torch.no_grad():
-            sampled_hyps = self.model.generate(
+            sampled_hyps, sampled_queries = self.forward(
                 input_ids=input_ids,
-                attention_mask=attention_mask, 
-                max_length=self.max_length, 
+                attention_mask=attention_mask,
+                model=self.model,
                 do_sample=True,
-            ) # (B X T)
+            )
 
-        sampled_queries = self.tokenizer.batch_decode(sampled_hyps, skip_special_tokens=True) # (B)
         sampled_prompts = [self.instruction + self.demonstrations + self.prefix + q for q in sampled_queries]
         sampled_responses = []
         for sampled_prompt in sampled_prompts:
@@ -156,14 +188,13 @@ class PromptTransformer:
         
         if self.use_greedy_baseline:
             with torch.no_grad():
-                greedy_hyps = self.model.generate(
+                greedy_hyps, greedy_queries = self.forward(
                     input_ids=input_ids,
-                    attention_mask=attention_mask, 
-                    max_length=self.max_length, 
+                    attention_mask=attention_mask,
+                    model=self.model,
                     do_sample=False,
                 )
-            
-            greedy_queries = self.tokenizer.batch_decode(greedy_hyps, skip_special_tokens=True) # (B)
+                
             greedy_prompts = [self.instruction + self.demonstrations + self.prefix + q for q in greedy_queries] 
             greedy_responses = []
             for greedy_prompt in greedy_prompts:
@@ -176,7 +207,7 @@ class PromptTransformer:
         
         # Implement policy update logic based on rewards
         # This involves backpropagation and optimizer steps
-        # Generate outputs and calculate log-probabilities of the actions taken
+        # Get outputs and calculate log-probabilities of the actions taken
         outputs = self.model(
             input_ids=input_ids, 
             attention_mask=attention_mask, 
@@ -241,19 +272,15 @@ class PromptTransformer:
         input_ids = batch['input_ids']
         attention_mask = batch.get('attention_mask')  # Use .get to handle cases where it might not exist
         original_queries = self.tokenizer.batch_decode(input_ids, skip_special_tokens=True)
-        print("original_queries: ", original_queries)
         answers = self.tokenizer.batch_decode(batch['labels'], skip_special_tokens=True)
         
         # Generate new responses
-        outputs = self.model.generate(
+        eval_hyps, new_queries = self.forward(
             input_ids=input_ids,
-            attention_mask=attention_mask, 
-            max_length=self.max_length, 
+            attention_mask=attention_mask,
+            model=self.model,
             do_sample=False,
-        ) # (B X T)
-        new_queries = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)   
-        print("new_queries: ", new_queries)
-        print("answers: ", answers)
+        )
         
         responses = []
         for new_query in new_queries:
@@ -262,10 +289,10 @@ class PromptTransformer:
             args.message = new_prompt
             response = generation_pipeline(args)
             responses.append(response)
-        print("new_responses: ", responses)
 
         # Calculate rouge scores and length
         rouge = Rouge()
+        bertscore = load("bertscore")
         
         for original_query, query, answer, response in zip(original_queries, new_queries, answers, responses):
             output_tokens = self.tokenizer.tokenize(response)
@@ -292,6 +319,11 @@ class PromptTransformer:
                     metrics[metric].append(scores[0][metric]['f'])
                 
             metrics['length'].append(len(output_tokens))
+            metrics['bertscore'].extend(bertscore.compute(
+                predictions=[response], 
+                references=[answer], 
+                lang="en")['f1']
+            )
         
         # pdb.set_trace()
             
@@ -302,12 +334,13 @@ class PromptTransformer:
         use_transformation: bool = True,
     ):
         self.model.to(self.device)
-        
+        bertscore = load("bertscore")
         metrics = {
             'rouge-1': [],
             'rouge-2': [],
             'rouge-l': [],
             'length': [],
+            'bertscore': [],
         }
         
         start = time.time()
@@ -354,6 +387,11 @@ class PromptTransformer:
                         
                 output_tokens = self.tokenizer.tokenize(response)
                 metrics['length'].append(len(output_tokens))
+                metrics['bertscore'].extend(bertscore.compute(
+                    predictions=[response], 
+                    references=[a], 
+                    lang="en")['f1']
+                )
                 
             if self.task == 'ICL':  
                 questions, ans_pred, ans_gold, num_q, acc = parse_pred_ans(save_file)
@@ -394,6 +432,7 @@ if __name__ == '__main__':
     parser.add_argument("--n_test_samples", type=int, default=-1)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--max_new_tokens", type=int, default=1024)
+    parser.add_argument("--chunk_size", type=int, default=5)
     args = parser.parse_args()
 
     # Reset default repetition penalty for T5 models.
