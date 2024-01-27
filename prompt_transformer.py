@@ -13,11 +13,9 @@ from transformers import (
     pipeline,
     AutoConfig, 
     AutoTokenizer, 
-    T5Tokenizer,
     AutoModelForSeq2SeqLM, 
     AutoModelForCausalLM,
     DataCollatorForSeq2Seq,
-    T5ForConditionalGeneration,
 )
 # import pdb # debug breakpoint
 from rouge import Rouge
@@ -56,7 +54,7 @@ class PromptTransformer:
         self.model = AutoModelForSeq2SeqLM.from_pretrained(
             self.my_model_name, 
             config=self.config,
-        ).bfloat16()
+        )
 
         os.makedirs(self.output_dir, exist_ok=True)
          
@@ -129,7 +127,7 @@ class PromptTransformer:
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        model: T5ForConditionalGeneration,
+        model: AutoModelForSeq2SeqLM,
         do_sample: Optional[bool] = False,
     ) -> List[str]:
         # Split the input sequence into N segments
