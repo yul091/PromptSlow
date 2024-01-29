@@ -1,6 +1,6 @@
 import sys 
 sys.dont_write_bytecode = True
-# import numpy as np
+import numpy as np
 from typing import List, Optional, Callable
 from torch.utils.data import DataLoader
 from datasets import load_dataset, Dataset
@@ -145,6 +145,28 @@ def get_dataloader(
     )
     
     return dataloader
+
+
+
+class BatchDataLoader():
+    def __init__(self, dataset, batch_size=1, shuffle=True):
+        assert isinstance(dataset, Dataset)
+        assert len(dataset) >= batch_size
+        self.shuffle = shuffle
+        self.dataset = dataset
+        self.batch_size = batch_size
+
+    def __iter__(self):
+        # return iter(self.dataset(self.batch_size, self.shuffle))
+        # for huggingface dataset, write a custom iterator
+        
+        if self.shuffle:
+            indices = np.random.permutation(len(self.dataset))
+        else:
+            indices = np.arange(len(self.dataset))
+        for i in range(0, len(self.dataset), self.batch_size):
+            batch_indices = indices[i:i + self.batch_size]
+            yield self.dataset[batch_indices]
 
 
 

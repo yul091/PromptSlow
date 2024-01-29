@@ -1,22 +1,32 @@
 import shutil
 import os
+import sys
+sys.dont_write_bytecode = True
 import codecs
-
+import argparse
+import numpy as np
 from pyrouge import Rouge155
 from rouge import Rouge
-
+from helper import Document
+from typing import Union, Tuple, Any, List
+from huggingface_api import generation_pipeline
 rouge = Rouge()
 
 
-def RougeTest_rouge(ref, hyp, rouge_metric="all", max_num_of_bytes=-1):
-    ref = [_.decode('ascii', 'ignore').encode('utf-8').lower() for _ in ref]
-    hyp = [_.decode('ascii', 'ignore').encode('utf-8').lower() for _ in hyp]
+def RougeTest_rouge(
+    ref: List[str], 
+    hyp: List[str], 
+    rouge_metric: str = "all", 
+    max_num_of_bytes: int = -1,
+) -> Union[float, Tuple]:
+    ref = [_.lower() for _ in ref]
+    hyp = [_.lower() for _ in hyp]
 
     if max_num_of_bytes > 0:
         ref = cutwords(ref)
         hyp = cutwords(hyp)
 
-    rouge_score = rouge.get_scores([hyp], [ref])
+    rouge_score = rouge.get_scores(hyp, ref)
     if rouge_metric[1] == 'f':
         return rouge_score[0]['rouge-%s' % rouge_metric[0]]['f']
     elif rouge_metric[1] == 'r':
@@ -33,8 +43,15 @@ def RougeTest_rouge(ref, hyp, rouge_metric="all", max_num_of_bytes=-1):
 
 home_path = os.path.expanduser('~')
 
-def RougeTest_pyrouge(ref, hyp, id=0, rouge_metric='all', compute_score=True,
-                      path='./result', max_num_of_bytes=-1):
+def RougeTest_pyrouge(
+    ref, 
+    hyp, 
+    id=0, 
+    rouge_metric='all', 
+    compute_score=True,
+    path='./result', 
+    max_num_of_bytes=-1,
+) -> Union[float, Tuple]:
     # initialization
     if not os.path.exists('./result'):
         os.mkdir('./result')
@@ -83,7 +100,7 @@ def RougeTest_pyrouge(ref, hyp, id=0, rouge_metric='all', compute_score=True,
         return None
 
 
-def cutwords(sens, max_num_of_chars):
+def cutwords(sens: List[str], max_num_of_chars: int) -> List[str]:
     output = []
     quota = max_num_of_chars
     for sen in sens:
@@ -96,23 +113,35 @@ def cutwords(sens, max_num_of_chars):
     return output
 
 
-def from_summary_index_generate_hyp_ref(doc, summary_index):
-    hyp = [doc.content[i].strip() for i in summary_index]
-    ref = [s.strip() for s in doc.summary]
-
+def from_summary_index_generate_hyp_ref(
+    doc: Document, 
+    summary_index: np.ndarray,
+) -> Tuple[List[str], List[str]]:
+    
+    hyp = [doc.query[i].strip() for i in summary_index]
+    ref = [s.strip() for s in doc.reference]
     return hyp, ref
 
 
-def from_summary_index_compute_rouge(doc, summary_index, std_rouge=False, rouge_metric="all", max_num_of_bytes=-1):
-    # greedy approach directly use this
-
+def from_summary_index_compute_rouge(
+    args: argparse.Namespace,
+    doc: Document, 
+    summary_index: np.ndarray, 
+    std_rouge: bool = False, 
+    rouge_metric: str = "all", 
+    max_num_of_bytes: int = -1, 
+) -> Union[float, Tuple]:
+    # Note: greedy approach directly use this
     hyp, ref = from_summary_index_generate_hyp_ref(doc, summary_index)
+    
+    args.message = " ".join(hyp)
+    llm_hyp = [generation_pipeline(args)]
 
     if len(hyp) == 0 or len(ref) == 0:
         return 0.
 
     if std_rouge:
-        score = RougeTest_pyrouge(ref, hyp, rouge_metric=rouge_metric, max_num_of_bytes=max_num_of_bytes)
+        score = RougeTest_pyrouge(ref, llm_hyp, rouge_metric=rouge_metric, max_num_of_bytes=max_num_of_bytes)
     else:
-        score = RougeTest_rouge(ref, hyp, rouge_metric=rouge_metric, max_num_of_bytes=max_num_of_bytes)
+        score = RougeTest_rouge(ref, llm_hyp, rouge_metric=rouge_metric, max_num_of_bytes=max_num_of_bytes)
     return score

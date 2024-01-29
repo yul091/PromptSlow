@@ -1,5 +1,5 @@
 
-CUDA_VISIBLE_DEVICES=0 python prompt_transformer.py \
+CUDA_VISIBLE_DEVICES=4 python prompt_transformer.py \
     --task conversational \
     --my_model_name t5-base \
     --temperature 0 \
