@@ -9,6 +9,7 @@ from pyrouge import Rouge155
 from rouge import Rouge
 from helper import Document
 from typing import Union, Tuple, Any, List
+from transformers import PreTrainedTokenizerFast
 from huggingface_api import generation_pipeline
 rouge = Rouge()
 
@@ -127,15 +128,18 @@ def from_summary_index_compute_rouge(
     args: argparse.Namespace,
     doc: Document, 
     summary_index: np.ndarray, 
+    tokenizer: PreTrainedTokenizerFast,
     std_rouge: bool = False, 
     rouge_metric: str = "all", 
     max_num_of_bytes: int = -1, 
-) -> Union[float, Tuple]:
+) -> Tuple[float, float]:
     # Note: greedy approach directly use this
     hyp, ref = from_summary_index_generate_hyp_ref(doc, summary_index)
     
     args.message = " ".join(hyp)
     llm_hyp = [generation_pipeline(args)]
+    
+    length_score = len(tokenizer.tokenize(ref[0])) / len(tokenizer.tokenize(llm_hyp[0]))
 
     if len(hyp) == 0 or len(ref) == 0:
         return 0.
@@ -144,4 +148,4 @@ def from_summary_index_compute_rouge(
         score = RougeTest_pyrouge(ref, llm_hyp, rouge_metric=rouge_metric, max_num_of_bytes=max_num_of_bytes)
     else:
         score = RougeTest_rouge(ref, llm_hyp, rouge_metric=rouge_metric, max_num_of_bytes=max_num_of_bytes)
-    return score
+    return score, length_score
