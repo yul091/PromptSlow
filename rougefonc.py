@@ -132,20 +132,26 @@ def from_summary_index_compute_rouge(
     std_rouge: bool = False, 
     rouge_metric: str = "all", 
     max_num_of_bytes: int = -1, 
-) -> Tuple[float, float]:
+    output_length: bool = False,
+):
     # Note: greedy approach directly use this
     hyp, ref = from_summary_index_generate_hyp_ref(doc, summary_index)
     
     args.message = " ".join(hyp)
     llm_hyp = [generation_pipeline(args)]
     
-    length_score = len(tokenizer.tokenize(ref[0])) / len(tokenizer.tokenize(llm_hyp[0]))
+    llm_output_length = len(tokenizer.tokenize(llm_hyp[0]))
+    length_score = len(tokenizer.tokenize(ref[0])) / llm_output_length
 
     if len(hyp) == 0 or len(ref) == 0:
-        return 0.
+        return 0., 0., 0. if output_length else 0., 0.
 
     if std_rouge:
         score = RougeTest_pyrouge(ref, llm_hyp, rouge_metric=rouge_metric, max_num_of_bytes=max_num_of_bytes)
     else:
         score = RougeTest_rouge(ref, llm_hyp, rouge_metric=rouge_metric, max_num_of_bytes=max_num_of_bytes)
-    return score, length_score
+        
+    if output_length:
+        return score, length_score, llm_output_length
+    else:
+        return score, length_score

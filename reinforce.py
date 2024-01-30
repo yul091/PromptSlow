@@ -38,8 +38,8 @@ def return_summary_index(
         
     else:
         if sample_method == "sample":
-            print("probs torch: ", probs_torch)
-            probs_torch = probs_torch.squeeze(0)
+            # print("probs torch: ", probs_torch)
+            probs_torch = probs_torch.squeeze(-1)
             # assert len(probs_torch.size()) == 1 
             if len(probs_torch.size()) == 1:
                 return np.arange(len(probs_torch)), probs_torch.sum()
@@ -118,7 +118,8 @@ class ReinforceReward:
         self.max_num_of_sents = None
         self.doc = None
 
-        self.global_avg_reward = 0.
+        self.global_avg_quality_reward = 0.
+        self.global_avg_length_reward = 0.
         self.train_examples_seen = 0.
 
         self.std_rouge = False
@@ -162,7 +163,7 @@ class ReinforceReward:
     
     
     def generate_reward(self, summary_index_list: np.ndarray, max_num_of_bytes: int = -1) -> Tuple[float, float]:
-        reward = from_summary_index_compute_rouge(
+        return from_summary_index_compute_rouge(
             self.args, 
             self.doc, 
             summary_index_list,
@@ -171,41 +172,49 @@ class ReinforceReward:
             rouge_metric=self.rouge_metric,
             max_num_of_bytes=max_num_of_bytes,
         )
-        return reward
     
     
-    def compute_baseline(self, batch_rewards: List[float]) -> Tuple[float, float]:
+    def compute_baseline(self, batch_rewards: List[Tuple[float, float]]) -> Tuple[float, float]:
         def running_avg(t, old_mean, new_score):
             return (t - 1) / t * old_mean + new_score / t
 
-        batch_avg_reward = np.mean(batch_rewards)
-        batch_median_reward = np.median(batch_rewards)
-        self.global_avg_reward = running_avg(
+        quality_rewards, length_rewards = zip(*batch_rewards)
+        batch_avg_quality_reward = np.mean(quality_rewards)
+        batch_avg_length_reward = np.mean(length_rewards)
+        batch_median_quality_reward = np.median(quality_rewards)
+        batch_median_length_reward = np.median(length_rewards)
+        self.global_avg_quality_reward = running_avg(
             self.train_examples_seen, 
-            self.global_avg_reward, 
-            batch_avg_reward,
+            self.global_avg_quality_reward,
+            batch_avg_quality_reward,
+        )
+        self.global_avg_length_reward = running_avg(
+            self.train_examples_seen, 
+            self.global_avg_length_reward, 
+            batch_avg_length_reward,
         )
         if self.rl_baseline_method == "batch_avg":
-            return batch_avg_reward
+            return batch_avg_quality_reward, batch_avg_length_reward
         if self.rl_baseline_method == "batch_med":
-            return batch_median_reward
+            return batch_median_quality_reward, batch_median_length_reward
         elif self.rl_baseline_method == "global_avg":
-            return self.global_avg_reward
+            return self.global_avg_quality_reward, self.global_avg_length_reward
         elif self.rl_baseline_method == "greedy":
             summary_index_list, _ = self.generate_index_list_and_loss("greedy")
             return self.generate_reward(summary_index_list)
         else:  # none
-            return 0
+            return 0, 0
         
         
     def generate_batch_loss(
         self, 
         batch_index_and_loss_lists: List[Tuple[np.ndarray, torch.FloatTensor]], 
-        batch_rewards: List[float], 
-        rl_baseline_reward: float,
+        batch_rewards: List[Tuple[float, float]], 
+        base_quality_reward: float,
+        base_length_reward: float,
     ) -> torch.FloatTensor:
         loss_list = [
-            batch_index_and_loss_lists[i][1] * ((rl_baseline_reward - batch_rewards[i]) / (rl_baseline_reward + 1e-9))
+            batch_index_and_loss_lists[i][1] * ((base_quality_reward - batch_rewards[i][0] + base_length_reward - batch_rewards[i][1]) / (base_quality_reward + base_length_reward + 1e-9))
             for i in range(len(batch_rewards))
         ]
         avg_loss = sum(loss_list) / (float(len(loss_list)) + 1e-8)
@@ -219,9 +228,9 @@ class ReinforceReward:
         max_num_of_sents: int = 3, 
         max_num_of_bytes: int = -1, 
         prt: bool = False,
-    ):
+    ) -> Tuple[torch.FloatTensor, float, float]:
         """
-        :return: training_loss_of_the current example
+        return: training_loss_of_the current example
         """
         self.update_data_instance(probs, doc, max_num_of_sents)
         self.train_examples_seen += 1
@@ -232,24 +241,31 @@ class ReinforceReward:
         ]
         # print('Sample rewards: ', batch_rewards)
 
-        rl_baseline_reward = self.compute_baseline(batch_rewards)
-        loss = self.generate_batch_loss(batch_index_and_loss_lists, batch_rewards, rl_baseline_reward)
+        base_quality_r, base_length_r = self.compute_baseline(batch_rewards)
+        loss = self.generate_batch_loss(
+            batch_index_and_loss_lists, 
+            batch_rewards, 
+            base_quality_reward=base_quality_r,
+            base_length_reward=base_length_r,
+        )
         # print(loss)
 
         greedy_index_list, _ = self.generate_index_list_and_loss("greedy")
-        greedy_reward = self.generate_reward(greedy_index_list, max_num_of_bytes)
+        greedy_quality_reward, greedy_length_reward = self.generate_reward(greedy_index_list, max_num_of_bytes)
         # print("Greedy rewards:", greedy_reward)
 
         if prt:
             print('Batch rewards:', np.array(batch_rewards))
-            print('Greedy rewards:', np.array(greedy_reward))
-            print('Baseline rewards:', np.array(rl_baseline_reward))
+            print('Greedy quality rewards:', np.array(greedy_quality_reward))
+            print('Greedy length rewards:', np.array(greedy_length_reward))
+            print('Baseline qualtiy rewards:', np.array(base_quality_r))
+            print('Baseline length rewards:', np.array(base_length_r))
 
             lead_index_list, _ = self.generate_index_list_and_loss("lead3")
             lead_reward = self.generate_reward(lead_index_list, max_num_of_bytes)
             print('Lead3 rewards:', np.array(lead_reward))
 
-        return loss, greedy_reward
+        return loss, greedy_quality_reward, greedy_length_reward
     
 
     def validate(self, probs: np.ndarray, doc: Document, max_num_of_sents: int = 3) -> Tuple[float, float]:
