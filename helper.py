@@ -21,17 +21,42 @@ Config = namedtuple('parameters',
 class Document():
     def __init__(
         self, 
-        query: List[str] = None, 
-        reference: List[str] = None,
-        instruction: str = None,
-        demonstrations: List[str] = None,
-        prefix: str = None,
+        query: List[str] = None, # forward
+        reference: List[str] = None, # forward
+        instruction: str = None, # forward
+        demonstrations: List[str] = None, # forward
+        prefix: str = None, # forward
+        reference_length: int = None, # forward
+        original_length: int = None, # forward
+        original_response: str = None,
+        original_response_length: int = None,
+        greedy_query: str = None, # reinforce_loss
+        greedy_query_length: int = None, # reinforce_loss
+        greedy_response: str = None, # reinforce_loss
+        greedy_response_length: int = None, # reinforce_loss
+        sample_query: str = None, # reinforce_loss
+        sample_query_length: int = None, # reinforce_loss
+        sample_response: str = None, # reinforce_loss
+        sample_response_length: int = None, # reinforce_loss
+        
     ):
         self.query = query
         self.reference = reference
         self.prefix = prefix
         self.instruction = instruction
         self.demonstrations = demonstrations
+        self.reference_length = reference_length
+        self.original_length = original_length
+        self.original_response = original_response
+        self.original_response_length = original_response_length
+        self.greedy_query = greedy_query
+        self.greedy_query_length = greedy_query_length
+        self.greedy_response = greedy_response
+        self.greedy_response_length = greedy_response_length
+        self.sample_query = sample_query
+        self.sample_query_length = sample_query_length
+        self.sample_response = sample_response
+        self.sample_response_length = sample_response_length
 
 
 # a bunch of converter functions

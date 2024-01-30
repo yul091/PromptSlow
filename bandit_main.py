@@ -1,6 +1,7 @@
 import os
 import sys 
 sys.dont_write_bytecode = True
+import math
 import argparse
 import torch
 import numpy as np
@@ -10,8 +11,8 @@ from typing import List, Dict, Any, Union, Tuple
 from helper import Document, tokens_to_sentences
 from Dataset import prompt_dataset, BatchDataLoader
 from reinforce import ReinforceReward, return_summary_index
-from huggingface_api import add_model_args
-from rougefonc import from_summary_index_compute_rouge
+from huggingface_api import add_model_args, generation_pipeline
+from rougefonc import from_summary_index_compute_rouge, RougeTest_rouge
 from transformers import (
     AutoConfig,
     AutoTokenizer,
@@ -37,7 +38,7 @@ def reinforce_loss(
     probs_numpy = probs.data.cpu().numpy()
     probs_numpy = np.reshape(probs_numpy, len(probs_numpy))
     max_num_of_sents = min(len(probs_numpy), max_num_of_sents)  # max of sents# in doc and sents# in summary
-
+    # print("Max num of sents (initial): ", max_num_of_sents)
     rl_baseline_summary_index, _ = return_summary_index(
         probs_numpy, 
         probs,
@@ -45,7 +46,8 @@ def reinforce_loss(
         max_num_of_sents=max_num_of_sents,
     )
     rl_baseline_summary_index = sorted(rl_baseline_summary_index)
-    base_qr, base_lr, base_length = from_summary_index_compute_rouge(
+    print("Summary index: ", rl_baseline_summary_index)
+    base_qr, base_lr, base_query, base_query_length, base_response, base_length = from_summary_index_compute_rouge(
         args=args,
         doc=doc, 
         summary_index=rl_baseline_summary_index, 
@@ -55,7 +57,12 @@ def reinforce_loss(
         max_num_of_bytes=max_num_of_bytes,
         output_length=True,
     )
-    lead3_qr, lead3_lr, lead3_length = from_summary_index_compute_rouge(
+    doc.sample_query = base_query
+    doc.sample_query_length = base_query_length
+    doc.sample_response = base_response
+    doc.sample_response_length = base_length
+    # print("Lead3 index: ", range(max_num_of_sents))
+    lead3_qr, lead3_lr, lead3_query, lead3_query_length, lead3_response, lead3_length = from_summary_index_compute_rouge(
         args=args,
         doc=doc, 
         summary_index=range(max_num_of_sents), 
@@ -65,6 +72,10 @@ def reinforce_loss(
         max_num_of_bytes=max_num_of_bytes,
         output_length=True,
     )
+    doc.greedy_query = lead3_query
+    doc.greedy_query_length = lead3_query_length
+    doc.greedy_response = lead3_response
+    doc.greedy_response_length = lead3_length
     return base_qr, base_lr, base_length, lead3_qr, lead3_lr, lead3_length
 
 
@@ -147,10 +158,12 @@ class BanditPrompt:
         
         tokens = self.tokenizer.tokenize(batch['query'][0])
         doc.query = tokens_to_sentences(tokens, self.tokenizer)
+        doc.original_length = len(tokens)
+        doc.reference_length = len(self.tokenizer.tokenize(doc.reference[0]))
         if self.args.oracle_length == -1:  # use true oracle length
             oracle_query_sent_num = len(doc.query)
         else:
-            oracle_query_sent_num = self.args.oracle_length
+            oracle_query_sent_num = math.ceil(self.args.oracle_length * len(doc.query))
         
         if len(doc.query) == 0 or len(doc.reference) == 0:
             return doc, None, oracle_query_sent_num
@@ -173,6 +186,8 @@ class BanditPrompt:
         # init statistics
         quality_reward_list, length_reward_list = [], []
         best_eval_reward = 0.
+        global_step = 0
+        model_n = self.model.__class__.__name__
         
         reinforce = ReinforceReward(
             args=self.args, 
@@ -185,11 +200,12 @@ class BanditPrompt:
         
         print(" ** Start training with RL ** ")
         for epoch in range(self.num_epochs):
-            step_in_epoch = 0
+            self.save_sample_file = f"{self.output_dir}/{self.args.model_path.split('/')[-1]}_{self.task}_{model_n}_epoch-{epoch+1}_sample.txt"
+            # self.save_greedy_file = f"{self.output_dir}/{self.args.model_path.split('/')[-1]}_{self.task}_{model_n}_epoch-{epoch+1}_greedy.txt"
             pbar = tqdm(enumerate(self.train_dataloader), total=len(self.train_dataloader.dataset))
             for step, batch in pbar:
                 self.model.train()
-                step_in_epoch += 1
+                global_step += 1
                 # batch: Dict[str, List[str]]
                 doc, probs, oracle_query_sent_num = self.forward_step(self.model, batch)
                 if probs is None:
@@ -212,32 +228,37 @@ class BanditPrompt:
                 
                 loss.backward()
                 
-                torch.nn.utils.clip_grad_norm(self.model.parameters(), 1)  # gradient clipping
+                # torch.nn.utils.clip_grad_norm(self.model.parameters(), 1)  # gradient clipping
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 
                 pbar.set_description('Epoch %d Step %d Quality reward %.4f Length reward %.4f' % (
-                    epoch, step_in_epoch, quality_reward, length_reward))
+                    epoch, step+1, quality_reward, length_reward))
             
-                if (step_in_epoch) % self.saving_step == 0 and step_in_epoch != 0:
-                    print('Epoch ' + str(epoch) + ' Step ' + str(step_in_epoch) + \
+                if (step+1) % self.saving_step == 0 and step+1 != 0:
+                    print('Epoch ' + str(epoch) + ' Step ' + str(step+1) + \
                         ' quality reward: ' + str(np.mean(quality_reward_list)) + \
                             ' length reward: ' + str(np.mean(length_reward_list)))
                     quality_reward_list, length_reward_list = [], []
 
-            # if (step_in_epoch) % 10000 == 0 and step_in_epoch != 0:
+            # if global_step % self.saving_step == 0:
             print(" ** Evaluation ** ")
-            eval_qr, eval_lr, lead3_qr, lead3_lr = self.evaluate(self.model, self.args, self.test_dataloader)
-            avg_qr_f1 = np.mean(list(eval_qr.values()))
-            avg_lead3_qr_f1 = np.mean(list(lead3_qr.values()))
+            metric, greedy_metric = self.evaluate(self.model, self.args, self.test_dataloader)
+            avg_qr_f1 = metric["avg_rouge_f"]
+            avg_lead3_qr_f1 = greedy_metric["avg_rouge_f"]
+            # Save metrics
+            with open(f'{self.output_dir}/metrics_{self.task}.txt', 'a') as f:
+                f.write(f'[epoch {epoch}]: \greedy: {metric}\n')
+                f.write(f'first-X: {greedy_metric}\n')
+            
             if avg_qr_f1 > best_eval_reward:
                 best_eval_reward = avg_qr_f1
                 print("saving model %s with quality reward %.4f, length reward %.4f, lead quality reward %.4f, lead length reward %.4f" % (
-                    self.output_dir, avg_qr_f1, eval_lr, avg_lead3_qr_f1, lead3_lr))
+                    self.output_dir, avg_qr_f1, metric['length_reward'], avg_lead3_qr_f1, greedy_metric['length_reward']))
                 # torch.save(extract_net, model_name)
-                self.model.save_pretrained(self.output_dir)
+                self.model.save_pretrained(os.path.join(self.output_dir, f"checkpoint-{global_step}"))
             print("Epoch %d: eval quality reward %.4f, length reward %.4f, lead quality reward %.4f, lead length reward %.4f" % (
-                    epoch, avg_qr_f1, eval_lr, avg_lead3_qr_f1, lead3_lr))
+                    epoch, avg_qr_f1, metric['length_reward'], avg_lead3_qr_f1, greedy_metric['length_reward']))
 
 
     def evaluate(self, model: torch.nn.Module, args: argparse.Namespace, eval_dataloder: BatchDataLoader):
@@ -249,7 +270,7 @@ class BanditPrompt:
             doc, probs, oracle_query_sent_num = self.forward_step(model, batch)
             if probs is None:
                 continue
-
+            
             compute_score = (step == len(eval_dataloder.dataset) - 1) or (args.std_rouge is False)
             qr, lr, length, lead3_qr, lead3_lr, lead3_length = reinforce_loss(
                 args, 
@@ -269,6 +290,21 @@ class BanditPrompt:
                 lead3_q_rewards.append(lead3_qr) # list of tuples
                 lead3_l_rewards.append(lead3_lr) # list of floats
                 lead3_lengths.append(lead3_length) # list of ints
+                
+            # Write query - response to file
+            with open(self.save_sample_file, 'a') as fd:
+                fd.write("Greedy Q (%d):\n%s\Greedy A (%d):\n%s\nFirst-X Q (%d):\n%s\nFirst-X A (%d):\n%s\nReferece (%d):\n%s\n\n" % (
+                    doc.sample_query_length,
+                    doc.sample_query, 
+                    doc.sample_response_length,
+                    doc.sample_response,
+                    doc.greedy_query_length,
+                    doc.greedy_query, 
+                    doc.greedy_response_length,
+                    doc.greedy_response,
+                    doc.reference_length,
+                    doc.reference[0],
+                ))         
 
         avg_eval_qr = np.mean(eval_q_rewards, axis=0)
         avg_eval_qr = {
@@ -278,6 +314,15 @@ class BanditPrompt:
         }
         avg_eval_lr = np.mean(eval_l_rewards, axis=0)
         avg_eval_length = np.mean(eval_lengths, axis=0)
+        metric = {
+            "rouge_1_f": avg_eval_qr["rouge_1_f"],
+            "rouge_2_f": avg_eval_qr["rouge_2_f"],
+            "rouge_l_f": avg_eval_qr["rouge_l_f"],
+            "avg_rouge_f": np.mean(list(avg_eval_qr.values())),
+            "length_reward": avg_eval_lr,
+            "length": avg_eval_length,
+        }
+        
         avg_lead3_qr = np.mean(lead3_q_rewards, axis=0)
         avg_lead3_qr = {
             "rouge_1_f": avg_lead3_qr[2],
@@ -290,7 +335,86 @@ class BanditPrompt:
         print('Avg eval length: %.4f, reward: %.4f' % (avg_eval_length, avg_eval_lr))
         print('Avg lead3 quality reward: ', avg_lead3_qr)
         print('Avg lead3 length: %.4f, reward: %.4f' % (avg_lead3_length, avg_lead3_lr))
-        return avg_eval_qr, avg_eval_lr, avg_lead3_qr, avg_lead3_lr
+        greedy_metric = {
+            "rouge_1_f": avg_lead3_qr["rouge_1_f"],
+            "rouge_2_f": avg_lead3_qr["rouge_2_f"],
+            "rouge_l_f": avg_lead3_qr["rouge_l_f"],
+            "avg_rouge_f": np.mean(list(avg_lead3_qr.values())),
+            "length_reward": avg_lead3_lr,
+            "length": avg_lead3_length,
+        }
+        
+        return metric, greedy_metric
+    
+    
+    def evaluate_no_bandit(self, args: argparse.Namespace, eval_dataloder: BatchDataLoader):
+        eval_q_rewards, eval_l_rewards, eval_lengths = [], [], []
+        model_n = self.model.__class__.__name__
+        self.save_nobandit_file = f"{self.output_dir}/{self.args.model_path.split('/')[-1]}_{self.task}_{model_n}.txt"
+        pbar = tqdm(enumerate(eval_dataloder), total=len(eval_dataloder.dataset))
+        for step, batch in pbar:
+            
+            doc = Document(
+                query=batch['query'],
+                reference=batch["reference"],
+                instruction=self.instruction,
+                demonstrations=self.demonstrations,
+                prefix=self.prefix,
+            )
+            
+            if len(doc.query) == 0 or len(doc.reference) == 0:
+                continue
+            
+            tokens = self.tokenizer.tokenize(batch['query'][0])
+            doc.original_length = len(tokens)
+            doc.reference_length = len(self.tokenizer.tokenize(doc.reference[0]))
+            
+            args.message = " ".join(doc.query)
+            llm_hyp = [generation_pipeline(args)]
+            llm_output_length = len(self.tokenizer.tokenize(llm_hyp[0]))
+            lr = len(self.tokenizer.tokenize(doc.reference[0])) / llm_output_length
+            qrs = RougeTest_rouge(
+                doc.reference, 
+                llm_hyp, 
+                rouge_metric='all', 
+                max_num_of_bytes=args.length_limit,
+            )
+            
+            with open(self.save_nobandit_file, 'a') as fd:
+                fd.write("Q (%d):\n%s\nA (%d):\n%s\nReferece (%d):\n%s\n\n" % (
+                    doc.original_length,
+                    batch['query'][0],
+                    llm_output_length,
+                    llm_hyp[0],
+                    doc.reference_length,
+                    doc.reference[0],
+                ))
+            
+            compute_score = (step == len(eval_dataloder.dataset) - 1) or (args.std_rouge is False)
+            
+            if compute_score:
+                eval_q_rewards.append(qrs) # list of tuples
+                eval_l_rewards.append(lr) # list of floats
+                eval_lengths.append(llm_output_length) # list of ints
+
+        avg_eval_qr = np.mean(eval_q_rewards, axis=0)
+        avg_eval_qr = {
+            "rouge_1_f": avg_eval_qr[2],
+            "rouge_2_f": avg_eval_qr[5],
+            "rouge_l_f": avg_eval_qr[8],
+        }
+        avg_eval_lr = np.mean(eval_l_rewards, axis=0)
+        avg_eval_length = np.mean(eval_lengths, axis=0)
+        metric = {
+            "rouge_1_f": avg_eval_qr["rouge_1_f"],
+            "rouge_2_f": avg_eval_qr["rouge_2_f"],
+            "rouge_l_f": avg_eval_qr["rouge_l_f"],
+            "avg_rouge_f": np.mean(list(avg_eval_qr.values())),
+            "length_reward": avg_eval_lr,
+            "length": avg_eval_length,
+        }
+        
+        return metric
 
     
     
@@ -318,8 +442,8 @@ if __name__ == '__main__':
     parser.add_argument('--prt_inf', action='store_true')
     parser.add_argument('--length_limit', type=int, default=-1,
                         help='length limit output')
-    parser.add_argument('--oracle_length', type=int, default=-1,
-                        help='-1 for giving actual oracle number of sentences, otherwise choose a fixed number of sentences')
+    parser.add_argument('--oracle_length', type=float, default=0.7,
+                        help='-1 for giving actual oracle number of sentences, otherwise choose a fixed porportion of sentences')
     parser.add_argument('--std_rouge', action='store_true')
     # Data arguments
     parser.add_argument("--task", type=str, default="conversational")
@@ -335,9 +459,17 @@ if __name__ == '__main__':
     if "t5" in args.model_path and args.repetition_penalty == 1.0:
         args.repetition_penalty = 1.2
         
-    if args.length_limit > 0:
-        args.oracle_length = 2
+    # if args.length_limit > 0:
+    #     args.oracle_length = 2
+        
+    os.makedirs(args.output_dir, exist_ok=True)
 
     # generation_pipeline(args)
-    banditprompt = BanditPrompt(args)
-    banditprompt.run()
+    bp = BanditPrompt(args)
+    metrics = bp.evaluate_no_bandit(bp.args, bp.test_dataloader)
+    print("Metrics without bandit transformation: {}".format(metrics))
+    # Save metrics
+    with open(f'{args.output_dir}/metrics_{args.task}.txt', 'w') as f:
+        f.write(f'[before transformation]: \n{metrics}\n')
+    # Training
+    bp.run()
