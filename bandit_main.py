@@ -115,8 +115,12 @@ class BanditPrompt:
             config=self.config,
         ).to(self.device)
         
+        # Customize max length
+        self.max_length = min(self.max_length, self.model.config.max_position_embeddings)
+        
         # Loss and Optimizer
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+        # self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, betas=(0., 0.999))
         
         # Reproducibility
         torch.manual_seed(self.seed)
@@ -248,7 +252,7 @@ class BanditPrompt:
             avg_lead3_qr_f1 = greedy_metric["avg_rouge_f"]
             # Save metrics
             with open(f'{self.output_dir}/metrics_{self.task}.txt', 'a') as f:
-                f.write(f'[epoch {epoch}]: \greedy: {metric}\n')
+                f.write(f'[epoch {epoch}]: greedy: {metric}\n')
                 f.write(f'first-X: {greedy_metric}\n')
             
             if avg_qr_f1 > best_eval_reward:
@@ -260,7 +264,7 @@ class BanditPrompt:
             print("Epoch %d: eval quality reward %.4f, length reward %.4f, lead quality reward %.4f, lead length reward %.4f" % (
                     epoch, avg_qr_f1, metric['length_reward'], avg_lead3_qr_f1, greedy_metric['length_reward']))
 
-
+    @ torch.no_grad()
     def evaluate(self, model: torch.nn.Module, args: argparse.Namespace, eval_dataloder: BatchDataLoader):
         model.eval()
         eval_q_rewards, eval_l_rewards, eval_lengths, lead3_q_rewards, lead3_l_rewards, lead3_lengths = [], [], [], [], [], []
@@ -293,7 +297,9 @@ class BanditPrompt:
                 
             # Write query - response to file
             with open(self.save_sample_file, 'a') as fd:
-                fd.write("Greedy Q (%d):\n%s\Greedy A (%d):\n%s\nFirst-X Q (%d):\n%s\nFirst-X A (%d):\n%s\nReferece (%d):\n%s\n\n" % (
+                fd.write("Q (%d):\n%s\nGreedy Q (%d):\n%s\nGreedy A (%d):\n%s\nFirst-X Q (%d):\n%s\nFirst-X A (%d):\n%s\nReferece (%d):\n%s\n\n" % (
+                    doc.original_length,
+                    batch['query'][0],
                     doc.sample_query_length,
                     doc.sample_query, 
                     doc.sample_response_length,
@@ -346,7 +352,7 @@ class BanditPrompt:
         
         return metric, greedy_metric
     
-    
+    @ torch.no_grad()
     def evaluate_no_bandit(self, args: argparse.Namespace, eval_dataloder: BatchDataLoader):
         eval_q_rewards, eval_l_rewards, eval_lengths = [], [], []
         model_n = self.model.__class__.__name__
@@ -466,10 +472,10 @@ if __name__ == '__main__':
 
     # generation_pipeline(args)
     bp = BanditPrompt(args)
-    metrics = bp.evaluate_no_bandit(bp.args, bp.test_dataloader)
-    print("Metrics without bandit transformation: {}".format(metrics))
-    # Save metrics
-    with open(f'{args.output_dir}/metrics_{args.task}.txt', 'w') as f:
-        f.write(f'[before transformation]: \n{metrics}\n')
+    # metrics = bp.evaluate_no_bandit(bp.args, bp.test_dataloader)
+    # print("Metrics without bandit transformation: {}".format(metrics))
+    # # Save metrics
+    # with open(f'{args.output_dir}/metrics_{args.task}.txt', 'w') as f:
+    #     f.write(f'[before transformation]: \n{metrics}\n')
     # Training
     bp.run()
