@@ -25,6 +25,25 @@ def create_cnndm_dataset():
     cnn_test = cnn["test"].select(range(1000))
     return cnn_train, cnn_test
 
+def create_xsum_dataset():
+    xsum = load_dataset("xsum")
+    print(xsum)
+    # Standardize the keys (text -> query, summary -> reference)
+    xsum = xsum.rename_column("document", "query")
+    xsum = xsum.rename_column("summary", "reference")
+    xsum_train = xsum["train"].select(range(1000))
+    xsum_test = xsum["test"].select(range(1000))
+    return xsum_train, xsum_test
+
+def create_pubmed_dataset():
+    pubmed = load_dataset("ccdv/pubmed-summarization")
+    print(pubmed)
+    # Standardize the keys (text -> query, summary -> reference)
+    pubmed = pubmed.rename_column("article", "query")
+    pubmed = pubmed.rename_column("abstract", "reference")
+    pubmed_train = pubmed["train"].select(range(1000))
+    pubmed_test = pubmed["test"].select(range(1000))
+    return pubmed_train, pubmed_test
 
 def create_sharegpt_dataset():
     
@@ -85,7 +104,7 @@ def generation_pipeline(args, model, tokenizer):
     prompt = conv.get_prompt()
 
     # Run inference
-    inputs = tokenizer([prompt], return_tensors="pt").to(args.device)
+    inputs = tokenizer([prompt], return_tensors="pt", truncation=True, max_length=args.max_length).to(args.device)
     output_ids = model.generate(
         **inputs,
         do_sample=True if args.temperature > 1e-5 else False,
@@ -116,6 +135,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--message", type=str, default="Hello! Who are you?")
     parser.add_argument('--prompt', type=str)
+    parser.add_argument('--max_length', type=int, default=2048)
     parser.add_argument('--save_path', type=str)
     parser.add_argument('--dataset', type=str, default='billsum')
     args = parser.parse_args()
@@ -134,10 +154,12 @@ if __name__ == "__main__":
         revision=args.revision,
         debug=args.debug,
     )
-    if args.dataset == 'billsum': 
-        train_dataset, test_dataset = create_billsum_dataset()
+    if args.dataset == 'xsum': 
+        train_dataset, test_dataset = create_xsum_dataset()
     elif args.dataset == 'cnn':
         train_dataset, test_dataset = create_cnndm_dataset()
+    elif args.dataset == 'pubmed':
+        train_dataset, test_dataset = create_pubmed_dataset()
     elif args.dataset == 'sharegpt':
         train_dataset, test_dataset = create_sharegpt_dataset()
 
@@ -147,7 +169,7 @@ if __name__ == "__main__":
         cur_example = {}
         document = item['query']
         reference = item['reference']
-        args.message = args.prompt + document
+        args.message = args.prompt.replace('\\n', '\n') + document
         result = generation_pipeline(args, model, tokenizer)
         cur_example['input'] = args.message
         cur_example['output'] = result
