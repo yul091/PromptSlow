@@ -78,39 +78,113 @@ if __name__ == "__main__":
         # '/data/yfu093/PromptSlow/summ_preprocess/billsum_train_one_vicuna.json',
         # '/data/yfu093/PromptSlow/summ_preprocess/billsum_train_two_vicuna.json',
         # '/data/yfu093/PromptSlow/summ_preprocess/billsum_train_three_vicuna.json' 
+        # '/data/yfu093/PromptSlow/summ_preprocess/billsum_train_none_vicuna.json' 
 
         # '/data/yfu093/PromptSlow/summ_preprocess/cnn_train_one_vicuna.json',
         # '/data/yfu093/PromptSlow/summ_preprocess/cnn_train_two_vicuna.json',
         # '/data/yfu093/PromptSlow/summ_preprocess/cnn_train_three_vicuna.json' 
+        # '/data/yfu093/PromptSlow/summ_preprocess/cnn_train_none_vicuna.json' 
 
-        '/data/yfu093/PromptSlow/summ_preprocess/sharegpt_train_one_vicuna.json',
-        '/data/yfu093/PromptSlow/summ_preprocess/sharegpt_train_two_vicuna.json',
-        '/data/yfu093/PromptSlow/summ_preprocess/sharegpt_train_three_vicuna.json',
-        '/data/yfu093/PromptSlow/summ_preprocess/sharegpt_train_four_vicuna.json' 
+        # '/data/yfu093/PromptSlow/summ_preprocess/sharegpt_train_one_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/sharegpt_train_two_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/sharegpt_train_three_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/sharegpt_train_four_vicuna.json' 
+
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/vicuna/cnn_train_none_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/vicuna/cnn_train_one_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/vicuna/cnn_train_two_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/vicuna/cnn_train_three_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/vicuna/cnn_train_four_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/vicuna/cnn_train_five_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/vicuna/cnn_train_six_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/vicuna/cnn_train_seven_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/vicuna/cnn_train_eight_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/vicuna/cnn_train_nine_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/vicuna/cnn_train_ten_vicuna.json'
+
+
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/llama2/cnn_train_none_llama2.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/llama2/cnn_train_one_llama2.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/llama2/cnn_train_two_llama2.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/llama2/cnn_train_three_llama2.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/llama2/cnn_train_four_llama2.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/llama2/cnn_train_five_llama2.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/llama2/cnn_train_six_llama2.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/llama2/cnn_train_seven_llama2.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/llama2/cnn_train_eight_llama2.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/llama2/cnn_train_nine_llama2.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/cnn_dailymail/llama2/cnn_train_ten_llama2.json'
+
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/vicuna/xsum_train_none_vicuna.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/vicuna/xsum_train_one_vicuna.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/vicuna/xsum_train_two_vicuna.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/vicuna/xsum_train_three_vicuna.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/vicuna/xsum_train_four_vicuna.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/vicuna/xsum_train_five_vicuna.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/vicuna/xsum_train_six_vicuna.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/vicuna/xsum_train_seven_vicuna.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/vicuna/xsum_train_eight_vicuna.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/vicuna/xsum_train_nine_vicuna.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/vicuna/xsum_train_ten_vicuna.json',
+
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/llama2/xsum_train_none_llama2.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/llama2/xsum_train_one_llama2.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/llama2/xsum_train_two_llama2.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/llama2/xsum_train_three_llama2.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/llama2/xsum_train_four_llama2.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/llama2/xsum_train_five_llama2.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/llama2/xsum_train_six_llama2.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/llama2/xsum_train_seven_llama2.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/llama2/xsum_train_eight_llama2.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/llama2/xsum_train_nine_llama2.json',
+        '/data/yfu093/PromptSlow/summ_preprocess/result/xsum/llama2/xsum_train_ten_llama2.json',
+
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/pubmed/vicuna/pubmed_train_none_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/pubmed/vicuna/pubmed_train_one_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/pubmed/vicuna/pubmed_train_two_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/pubmed/vicuna/pubmed_train_three_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/pubmed/vicuna/pubmed_train_four_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/pubmed/vicuna/pubmed_train_five_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/pubmed/vicuna/pubmed_train_six_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/pubmed/vicuna/pubmed_train_seven_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/pubmed/vicuna/pubmed_train_eight_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/pubmed/vicuna/pubmed_train_nine_vicuna.json',
+        # '/data/yfu093/PromptSlow/summ_preprocess/result/pubmed/vicuna/pubmed_train_ten_vicuna.json',
     ]
+    from datasets import load_metric
+    bert_score = load_metric("bertscore")
     for data_path in total_data_path:
         total_length_reward = []
         total_quality_reward = []
         with open(data_path, 'r') as f:
             data = json.load(f)
+            total_ref = []
+            total_result = []
             for item in tqdm(data, total=len(data)):
-                input = item['input']
                 ref = item['reference']
                 result = item['output']
-                try:
-                    length_reward = len(result) / len(ref)
-                    quality_reward = RougeTest_rouge([ref], [result], rouge_metric='avg_f')
-
-                    total_length_reward.append(length_reward)
-                    total_quality_reward.append(quality_reward)
-                except:
+                if len(ref) == 0 or len(result) == 0:
                     continue
+                else:
+                    total_ref.append(ref)
+                    total_result.append(result)
+                    try:
+                        length_reward = len(ref) / len(result)
+                        quality_reward = RougeTest_rouge([ref], [result], rouge_metric='avg_f')
 
+                        total_length_reward.append(length_reward)
+                        total_quality_reward.append(quality_reward)
+                    except:
+                        continue
+            # l = sum(total_length_reward) / len(total_length_reward)
+            # q = sum(total_quality_reward) / len(total_quality_reward)
+            # print(f'data: {data_path} \n length_reward: {l} \n quality_reward: {q}')
+            # print('-'*50)
+            bert_reward = bert_score.compute(predictions=total_result, references=total_ref, lang="en")
             l = sum(total_length_reward) / len(total_length_reward)
-            # print(f'length_reward: {l}')
-
             q = sum(total_quality_reward) / len(total_quality_reward)
-            print(f'length_reward: {l} \n quality_reward: {q}')
+            bert_reward = sum(bert_reward['f1']) / len(bert_reward['f1'])
+            print(f'data: {data_path} \n len: {len(total_quality_reward)}\n length_reward: {l} \n quality_reward: {q} \n bert reward: {bert_reward}')
             print('-'*50)
 
         
