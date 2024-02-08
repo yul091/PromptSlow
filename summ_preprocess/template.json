@@ -1,0 +1,32 @@
+[
+    {
+        "one": "Capture the absolute core message in a single, concise sentence.",
+        "two": "Briefly state the main point and a key supporting detail or consequence.",
+        "three": "Provide a basic overview with the main point and two supporting details.",
+        "four": "Offer a more detailed summary with the main point, two key details, and a concluding statement.",
+        "five": "Dive deeper by including the main point, two supporting details, an opposing viewpoint, and a concluding statement.",
+        "six": "Focus on the context, introducing the main issue and two major players or ideas involved.",
+        "seven": "Deepen your summary by providing the main point, two supporting details, an opposing viewpoint with its counterargument, and a conclusive statement.",
+        "eight": "Briefly outline the context, introduce the main topic and two key arguments, and touch upon their potential outcomes",
+    }
+    {
+        "one": "Capture the main point in a single, concise sentence.",
+        "two": "Include the most important details without exceeding two sentences.",
+        "three": "Summarize the main points while mentioning the context or situation.",
+        "four": "Summarize the key points and mention supporting details or examples.",
+        "five": "Aim for four to five informative sentences.",
+        "six": "Briefly mention the context, arguments, and potential outcomes.",
+        "seven": "Offer a balanced summary capturing the main points and key details.",
+        "eight": "Strive for a well-structured summary within six to eight sentences."
+    }
+    {
+        "one": "Condense the article into a single sentence.",
+        "two": "Craft a two-sentence overview of the article.",
+        "three": "Deliver a summary of the article in three sentences.",
+        "four": "Outline the article briefly in a short paragraph.",
+        "five": "Compose a paragraph summarizing the article's main points.",
+        "six": "Develop a detailed paragraph capturing the essence of the article.",
+        "seven": "Expand the summary into several paragraphs, detailing key aspects of the article.",
+        "eight": "Provide a comprehensive summary of the following article in several detailed paragraphs."
+    }
+]
